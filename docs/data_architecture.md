@@ -62,16 +62,23 @@ concepts rather than being inferred from context.
 
 ## Exact table inventory
 
-16 tables are defined, identically, across `src/ibi/db/models/*.py` and
-`alembic/versions/50445f5a9e59_initial_schema.py` (verified by
-`tests/integration/test_alembic_migration.py`, which asserts the migration
-creates every table `Base.metadata` declares — a mismatch there fails the
-test):
+17 tables are defined, identically, across `src/ibi/db/models/*.py` and the
+Alembic migration chain (verified by `tests/integration/test_alembic_migration.py`,
+which asserts the migrations create every table `Base.metadata` declares —
+a mismatch there fails the test):
 
 `entities`, `source_documents`, `observations`, `financial_data`,
 `market_data`, `events`, `claims`, `evidence`, `research`, `theses`,
 `scenarios`, `predictions`, `outcomes`, `alerts`, `decisions`,
-`provider_calls`.
+`provider_calls` (all from the Phase 0 migration, `50445f5a9e59`), plus
+`filings` (added in Phase 1, migration `50dc0583f9c1`) — the first table
+introduced after Phase 0's baseline, holding SEC (and, in future,
+provider-neutral) filing metadata; see "SEC EDGAR ingestion" below.
+
+(A live database inspection will show 18 tables, not 17 — the extra one is
+`alembic_version`, Alembic's own bookkeeping table, which is not part of
+`Base.metadata` and is deliberately excluded from this application-table
+count.)
 
 **Why 16, not 14:** the original schema requirement named 14 conceptual
 record categories (entities, source documents, observations, financial
@@ -92,9 +99,13 @@ scope creep.
 
 ## PostgreSQL-specific review
 
-Audited `src/ibi/db/models/*.py` and the migration for PostgreSQL-specific
-risk. No live PostgreSQL instance was available to validate this against —
-see the procedure in DEVELOPMENT.md. Findings:
+Audited `src/ibi/db/models/*.py` and the migrations for PostgreSQL-specific
+risk. The full migration chain — Phase 0's baseline (`50445f5a9e59`) and
+both Phase 1 migrations (`50dc0583f9c1`, `a950c85c80b9`) — has been run
+against a real PostgreSQL 18.6 instance, confirmed at head with zero
+`alembic check` drift, including direct confirmation that the two partial
+unique indexes on `financial_data` exist by name on real PostgreSQL, not
+just SQLite. See DECISIONS.md for the full result. Findings:
 
 - **JSON vs JSONB** — fixed. All 6 JSON-typed columns (`observations.value`,
   `theses.evidence_ids`, and `scenarios.{assumptions,catalysts,risks,unknowns,invalidation_conditions}`)
@@ -150,16 +161,53 @@ see the procedure in DEVELOPMENT.md. Findings:
 - **Nullable/non-nullable** — verified column-by-column between
   `src/ibi/db/models/*.py` and the migration during this audit; every
   column's nullability matches exactly between the two.
-- **Uniqueness constraints** — none defined, and none are currently
-  needed: every table is either a natural log (`observations`, `events`,
-  `market_data`, `provider_calls` — multiple rows per entity are expected)
-  or already has a sufficient primary key (`entities.entity_id`).
+- **Uniqueness constraints** — as of Phase 0, none were needed (every table
+  was either a natural log or already had a sufficient primary key). Phase 1
+  added two: `filings.accession_number` (plain `UNIQUE` — SEC accession
+  numbers are globally unique by construction, safe immediately) and the
+  two partial unique indexes on `financial_data` implementing the XBRL fact
+  identity model — see "SEC EDGAR ingestion" below.
+
+## SEC EDGAR ingestion (Phase 1)
+
+`ibi.data_engine.sec_edgar` is the first real `SourceConnector`
+implementation. Its identity model, point-in-time rule, and provenance
+design went through several review passes — see DECISIONS.md, "Phase 1:
+SEC EDGAR ingestion," for the full history. Summary:
+
+- **Identity**: a stored XBRL fact is uniquely identified by
+  `(entity_id, metric_id, unit, start_date, end_date, accession_number)`,
+  enforced by two partial unique indexes on `financial_data`
+  (`uq_financial_data_duration_fact` where `start_date IS NOT NULL`,
+  `uq_financial_data_instant_fact` where `start_date IS NULL` — PostgreSQL
+  treats `NULL <> NULL`, so one plain constraint can't cover both fact
+  shapes). Empirically validated against ~58,000 real fact entries from two
+  companies (Apple, Microsoft) before either index was created — zero
+  collisions found; the flawed key without `unit`/`start_date` collided on
+  thousands of real facts (e.g. an annual and a Q4-only duration reported
+  under the same tag/end-date/accession).
+- **Point-in-time**: `known_available_at` (+ `availability_precision`,
+  `"acceptance_timestamp"` or `"day_conservative"`) implements the approved
+  hybrid rule — SEC's `acceptanceDateTime` when it falls within EDGAR's
+  documented operating hours on an SEC business day, otherwise the next
+  SEC/federal business day after `filing_date`. `retrieval_date` never
+  participates in this computation. See `ibi.data_engine.sec_edgar.availability`.
+- **Provenance**: two distinct edges, never conflated — `accession_number`
+  (+ `filings` table) answers "what filing produced this," while
+  `source_document_id` answers "which raw API snapshot did we read it
+  from." Phase 1 does not fetch or store the original filing's HTML/XML
+  bytes — only SEC's own filing metadata (`submissions.json`) and
+  aggregated XBRL facts (`companyfacts.json`).
+- **Fixed universe**: exactly two companies (Apple, CIK 320193; Microsoft,
+  CIK 789019) — see `ibi.data_engine.sec_edgar.fixed_universe`. Changing
+  this list is a deliberate decision, not a routine edit.
+- **Raw snapshot archival**: every fetched JSON response is written
+  verbatim to `IBI_RAW_DATA_DIR` (default `data/raw/`, gitignored — runtime
+  data, not source code) and referenced from `source_documents.content_ref`.
 
 ## What's not yet built
 
-`data_engine.interfaces.SourceConnector` defines the contract for pulling
-data from an external source into `RawRecord`s, but no concrete connector
-exists yet — Phase 0 does not ingest real data. The schema and immutability
-rules above are validated by `tests/integration/test_db_models_smoke.py`
-and `test_alembic_migration.py` using synthetic rows, not real ingested
-data.
+Every other domain package's `SourceConnector`-equivalent remains
+interfaces only — `sec_edgar` is the first and only concrete ingestion
+source. No financial-metric computation runs on ingested SEC data yet (no
+`financial_engine` consumer exists for it), no market data, no AI research.

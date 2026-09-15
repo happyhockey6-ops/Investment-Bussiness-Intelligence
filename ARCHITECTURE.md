@@ -18,7 +18,7 @@ src/ibi/
     ai/                 AIProvider interface + Claude/Local/Null implementations + router
     market_data/        MarketDataProvider interface + Null implementation + router
   db/                   SQLAlchemy models + session/engine factories
-  data_engine/          source ingestion boundary (SourceConnector)
+  data_engine/          source ingestion boundary (SourceConnector; implemented: sec_edgar)
   entity_engine/        entity identity/resolution boundary
   financial_engine/     deterministic financial metrics (implemented: a small real slice)
   market_engine/        price/volume-derived signal boundary
@@ -38,11 +38,14 @@ src/ibi/
   dashboard/            read-only presentation boundary
 ```
 
-Every domain subpackage except `financial_engine` and the provider
-implementations currently contains **interfaces and data contracts only** —
-`interfaces.py` with docstrings explaining scope and an explicit "not
-implemented in Phase 0" note. This is intentional: Phase 0's job is to make
-the boundaries and contracts right before filling them in.
+Every domain subpackage except `financial_engine`, the provider
+implementations, and `data_engine.sec_edgar` (Phase 1's first real source
+connector — see docs/data_architecture.md) currently contains **interfaces
+and data contracts only** — `interfaces.py` with docstrings explaining
+scope and an explicit "not implemented in Phase 0" note. This is
+intentional: Phase 0's job is to make the boundaries and contracts right
+before filling them in; Phase 1 fills in exactly one of them, deliberately,
+as a proof of the whole foundation working end to end.
 
 ## The three-layer separation
 
@@ -100,10 +103,12 @@ project's scope.
 `ibi.backtesting_engine.interfaces.PointInTimeDataset` is the only
 sanctioned read path for simulated historical decisions. Its query type
 carries an explicit `as_of` timestamp, and its contract requires that no
-record with a later `retrieval_date` (see `ibi.core.epistemics.Provenance`)
-ever be returned — this is what prevents look-ahead bias, survivorship
-bias, and general future-information contamination once real backtesting
-is implemented.
+record with a later *availability* timestamp ever be returned — this is
+what prevents look-ahead bias, survivorship bias, and general
+future-information contamination once real backtesting is implemented.
+Availability is deliberately not `retrieval_date` (when the system fetched
+a record) — see `ibi.data_engine.sec_edgar`'s `known_available_at` for the
+concrete pattern established in Phase 1, and DECISIONS.md for why.
 
 ## What Phase 0 deliberately does not build
 
@@ -112,3 +117,14 @@ graph, no full financial/valuation/scoring engines, no live research
 pipeline, no brokerage integration, no trade execution, no production
 market-data vendor selection. Each of those has a domain boundary ready to
 receive the implementation when its phase arrives.
+
+## Phase 1: what changed
+
+`data_engine.sec_edgar` is a real, tested ingestion source — the first
+domain package to move beyond interfaces. Everything else above still
+holds: no financial computation on the ingested data, no market data, no
+AI research, no UI, no vendor selection beyond SEC itself, and the fixed
+two-company universe is not to be expanded without a deliberate decision
+(see DECISIONS.md). One new table (`filings`) and five new columns on
+`financial_data` were added, both additively — the Phase 0 migration was
+not modified.

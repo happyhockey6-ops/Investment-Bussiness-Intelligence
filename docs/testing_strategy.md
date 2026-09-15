@@ -47,6 +47,31 @@ Run everything: `pytest`. Run only what needs no external service at all:
   fast and green with no database running, but exercises the real thing
   automatically once one exists.
 
+## What's covered in Phase 1 (SEC EDGAR ingestion)
+
+- **Federal holidays / business days** (`test_sec_edgar_holidays.py`) —
+  known real holiday dates, the weekend-observance shift, Juneteenth's 2021
+  start, and business-day skipping across weekends and holidays together.
+- **Point-in-time rule** (`test_sec_edgar_availability.py`) — the hybrid
+  rule's both branches (acceptance-timestamp used when safe, conservative
+  fallback otherwise), rejection of naive datetimes, and an explicit
+  assertion that `retrieval_date` isn't even a parameter of the function.
+- **Mapping** (`test_sec_edgar_mapping.py`) — against real, trimmed SEC
+  fixture data (`tests/fixtures/sec_edgar/`), including reproducing the
+  exact real annual/quarterly duration collision found during empirical
+  identity-key validation, and confirming every parsed fact is labeled
+  `FACT`.
+- **Full pipeline, idempotency, point-in-time filtering, DB-level identity
+  enforcement, and partial-failure isolation** (`test_sec_edgar_ingestion.py`)
+  — end-to-end against a temporary SQLite database via a fake connector
+  (no network), plus two tests that insert directly against the real
+  partial unique indexes to confirm the database itself — not just
+  application dedup logic — rejects a colliding duration fact and accepts
+  a legitimately coexisting instant fact.
+- **Opt-in live test** (`test_sec_edgar_live.py`, marked `live_network`,
+  excluded by default via `addopts` in pyproject.toml) — one real company
+  (Apple), run manually against the real SEC API.
+
 ## What's deliberately not covered
 
 Every domain package beyond `financial_engine`'s implemented slice is an

@@ -61,6 +61,35 @@ class Settings(BaseSettings):
 
     anthropic_api_key: SecretStr | None = Field(default=None, alias="ANTHROPIC_API_KEY")
 
+    raw_data_dir: str = Field(
+        default="data/raw",
+        description=(
+            "Local directory immutable raw source snapshots are archived to "
+            "(see ibi.data_engine.sec_edgar.ingest). Runtime data, not source "
+            "code — gitignored."
+        ),
+    )
+
+    sec_user_agent: str | None = Field(
+        default=None,
+        description=(
+            "Required by SEC's fair-access policy for all EDGAR API requests: "
+            "'Organization Name contact@domain.com'. Not a secret, but must be "
+            "a real, honest contact — SEC may log and use it to reach the requester."
+        ),
+    )
+
+    def require_sec_user_agent(self) -> str:
+        """Fail loudly, at the call site that needs it, if unset — never
+        send SEC a generic/browser-mimicking User-Agent (see SECURITY.md)."""
+        if not self.sec_user_agent:
+            raise RuntimeError(
+                "IBI_SEC_USER_AGENT is not set. SEC requires a descriptive "
+                "User-Agent ('Organization Name contact@domain.com') on every "
+                "EDGAR API request; see .env.example."
+            )
+        return self.sec_user_agent
+
     @field_validator("ai_monthly_budget_usd")
     @classmethod
     def _budget_must_be_non_negative(cls, value: float | None) -> float | None:

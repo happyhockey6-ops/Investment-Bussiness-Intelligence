@@ -8,13 +8,18 @@ analysis, contrarian analysis, and learning from prediction errors.
 autonomous trading, and no automatic execution anywhere in this project's
 scope. See [DECISIONS.md](DECISIONS.md) for why.
 
-## Status: Phase 0 (Foundation)
+## Status: Phase 1 (SEC EDGAR ingestion)
 
-This repository currently contains the **foundation** of the platform, not
-the platform itself: domain boundaries, provider abstractions, the
-evidence/epistemic model, a database schema and migration system, and a
-tested slice of deterministic financial computation. Most domain engines
-are interfaces with no behavior yet — see [ARCHITECTURE.md](ARCHITECTURE.md)
+Phase 0 established the foundation: domain boundaries, provider
+abstractions, the evidence/epistemic model, a database schema and
+migration system, and a tested slice of deterministic financial
+computation. Phase 1 added the first real, tested ingestion source —
+`ibi.data_engine.sec_edgar` — pulling structured XBRL facts and filing
+metadata for a small, fixed set of companies (Apple, Microsoft) from SEC's
+public JSON APIs, with a reviewed identity model, point-in-time
+availability rule, and full provenance chain. No financial calculation
+runs on this data yet, no market data, no AI research. Most domain engines
+remain interfaces with no behavior — see [ARCHITECTURE.md](ARCHITECTURE.md)
 for what exists and what is deliberately deferred.
 
 ## Core principle

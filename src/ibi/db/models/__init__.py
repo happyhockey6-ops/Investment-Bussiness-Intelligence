@@ -6,6 +6,7 @@ from ibi.db.models.decision import DecisionRecord
 from ibi.db.models.entity import EntityRecord
 from ibi.db.models.event import EventRecord
 from ibi.db.models.evidence import ClaimRecord, EvidenceRecord
+from ibi.db.models.filing import FilingRecord
 from ibi.db.models.financial import FinancialDataPointRecord
 from ibi.db.models.market import MarketDataBarRecord
 from ibi.db.models.observation import ObservationRecord
@@ -22,6 +23,7 @@ __all__ = [
     "EventRecord",
     "ClaimRecord",
     "EvidenceRecord",
+    "FilingRecord",
     "FinancialDataPointRecord",
     "MarketDataBarRecord",
     "ObservationRecord",

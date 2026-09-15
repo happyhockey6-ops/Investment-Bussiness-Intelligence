@@ -6,6 +6,22 @@ must go through this interface rather than querying `db` directly — that is
 what prevents look-ahead bias (using restated/revised figures), survivorship
 bias (querying only entities that still exist today), and general
 future-information contamination.
+
+Filter on a record's *availability* timestamp, not `retrieval_date`. Phase
+1's SEC EDGAR ingestion (`ibi.data_engine.sec_edgar`) established the
+concrete distinction, after review found the original Phase 0 framing
+below too imprecise: `retrieval_date` (`ibi.core.epistemics.Provenance`)
+only says when *this system* fetched a record, which is a poor proxy for
+"when could this have been known" — a backfilling ingestion run gives many
+years of history the same `retrieval_date`, which would make a backtest
+wrongly treat old, genuinely-public information as unknowable until
+whatever day the ingestion happened to run. Use the record's own
+availability field instead (e.g. `financial_data.known_available_at` — see
+DECISIONS.md, "Phase 1: SEC EDGAR ingestion," for the exact derivation
+rule and the official SEC documentation it's grounded in).
+`retrieval_date` remains useful as a separate, stricter ceiling for a
+"what could our own system have said" replay mode, but is not the primary
+filter.
 """
 
 from __future__ import annotations
@@ -24,8 +40,9 @@ class BacktestBiasError(Exception):
 class PointInTimeQuery:
     entity_id: str
     as_of: datetime
-    """Simulated "now". Only records with retrieval_date <= as_of (see
-    `ibi.core.epistemics.Provenance.retrieval_date`) may be returned."""
+    """Simulated "now". Only records whose own availability timestamp is
+    <= as_of may be returned — see the module docstring for why this is
+    not `retrieval_date`."""
 
 
 class PointInTimeDataset(ABC):
@@ -44,7 +61,7 @@ class PointInTimeDataset(ABC):
 
     @abstractmethod
     def observation_as_of(self, query: PointInTimeQuery) -> object | None:
-        """Return the most recent observation for `query.entity_id` with
-        `retrieval_date <= query.as_of`, or `None`. Must never return a
-        later-arriving restatement of a figure as if it were originally
-        reported this way."""
+        """Return the most recent observation for `query.entity_id` whose
+        availability timestamp is <= `query.as_of`, or `None`. Must never
+        return a later-arriving restatement of a figure as if it were
+        originally reported this way."""

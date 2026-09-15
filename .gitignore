@@ -32,6 +32,9 @@ coverage.xml
 *.db
 /pgdata/
 
+# --- Raw ingested source snapshots (runtime data, not source code) ---
+/data/raw/
+
 # --- Logs ---
 *.log
 logs/

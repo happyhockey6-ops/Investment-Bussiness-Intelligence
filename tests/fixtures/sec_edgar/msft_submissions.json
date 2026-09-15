@@ -1,0 +1,147 @@
+{
+  "cik": "0000789019",
+  "entityType": "operating",
+  "sic": "7372",
+  "sicDescription": "Services-Prepackaged Software",
+  "name": "MICROSOFT CORP",
+  "tickers": [
+    "MSFT"
+  ],
+  "exchanges": [
+    "Nasdaq"
+  ],
+  "fiscalYearEnd": "0630",
+  "filings": {
+    "recent": {
+      "accessionNumber": [
+        "0000789019-26-000208",
+        "0000789019-26-000207",
+        "0001193125-26-323660",
+        "0001193125-26-191507",
+        "0001193125-26-027207",
+        "0000950170-25-100235"
+      ],
+      "filingDate": [
+        "2026-09-11",
+        "2026-09-11",
+        "2026-07-29",
+        "2026-04-29",
+        "2026-01-28",
+        "2025-07-30"
+      ],
+      "reportDate": [
+        "2026-09-10",
+        "2026-09-10",
+        "2026-06-30",
+        "2026-03-31",
+        "2025-12-31",
+        "2025-06-30"
+      ],
+      "acceptanceDateTime": [
+        "2026-09-11T22:05:32.000Z",
+        "2026-09-11T22:05:11.000Z",
+        "2026-07-29T20:08:01.000Z",
+        "2026-04-29T20:06:24.000Z",
+        "2026-01-28T21:07:34.000Z",
+        "2025-07-30T20:11:40.000Z"
+      ],
+      "act": [
+        "",
+        "",
+        "34",
+        "34",
+        "34",
+        "34"
+      ],
+      "form": [
+        "4",
+        "4",
+        "10-K",
+        "10-Q",
+        "10-Q",
+        "10-K"
+      ],
+      "fileNumber": [
+        "",
+        "",
+        "001-37845",
+        "001-37845",
+        "001-37845",
+        "001-37845"
+      ],
+      "filmNumber": [
+        "",
+        "",
+        "261217433",
+        "26915896",
+        "26572527",
+        "251167157"
+      ],
+      "items": [
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "core_type": [
+        "4",
+        "4",
+        "XBRL",
+        "XBRL",
+        "XBRL",
+        "XBRL"
+      ],
+      "size": [
+        6408,
+        6339,
+        36328553,
+        31304294,
+        30063042,
+        34889671
+      ],
+      "isXBRL": [
+        0,
+        0,
+        1,
+        1,
+        1,
+        1
+      ],
+      "isInlineXBRL": [
+        0,
+        0,
+        1,
+        1,
+        1,
+        1
+      ],
+      "isXBRLNumeric": [
+        0,
+        0,
+        1,
+        1,
+        null,
+        null
+      ],
+      "primaryDocument": [
+        "xslF345X06/form4.xml",
+        "xslF345X06/form4.xml",
+        "msft-20260630.htm",
+        "msft-20260331.htm",
+        "msft-20251231.htm",
+        "msft-20250630.htm"
+      ],
+      "primaryDocDescription": [
+        "STATEMENT OF CHANGES IN BENEFICIAL OWNERSHIP OF SECURITIES",
+        "STATEMENT OF CHANGES IN BENEFICIAL OWNERSHIP OF SECURITIES",
+        "10-K",
+        "10-Q",
+        "10-Q",
+        "10-K"
+      ]
+    },
+    "files": []
+  }
+}

@@ -82,38 +82,44 @@ Run only tests that don't require any external service:
    changes, some constraint changes) and has not been run against a live
    database for the Phase 0 baseline migration; see DECISIONS.md.
 
-### Real-PostgreSQL validation procedure (not yet run — no instance available)
+### Real-PostgreSQL validation procedure
 
-The Phase 0 baseline migration (`alembic/versions/50445f5a9e59_initial_schema.py`)
-has only been verified against SQLite (see
-`tests/integration/test_alembic_migration.py` and `test_db_models_smoke.py`).
-No PostgreSQL instance was available in the Phase 0 development environment
-(no service, no listening port 5432, no Docker). Run this procedure the
-first time a real PostgreSQL instance is available, to close that gap:
+**Status**: complete. The full migration chain — Phase 0's baseline
+(`50445f5a9e59`) and both Phase 1 migrations (`50dc0583f9c1`,
+`a950c85c80b9`) — has been run against a real PostgreSQL 18.6 instance,
+confirmed at head (`a950c85c80b9`), with `alembic check` reporting "No new
+upgrade operations detected." Direct read-only inspection confirmed all 18
+tables (17 application tables + `alembic_version`) and confirmed
+`financial_data`'s indexes are exactly `financial_data_pkey`,
+`uq_financial_data_duration_fact`, and `uq_financial_data_instant_fact` —
+i.e. the two partial unique indexes exist on real PostgreSQL, not just
+SQLite. See DECISIONS.md for the full record.
+
+The procedure below is kept for reproducibility (a fresh environment, CI,
+or re-verifying after a future migration) — it is not a pending step:
 
 ```powershell
 # 1. Start a local PostgreSQL instance (Docker is the fastest path, if available)
 docker run --name ibi-pg-check -e POSTGRES_PASSWORD=ibi -e POSTGRES_USER=ibi `
   -e POSTGRES_DB=ibi_dev -p 5432:5432 -d postgres:16
 
-# 2. Point configuration at it
+# 2. Point configuration at it (same-invocation only — this session's shell
+#    state does not persist a $env: assignment across separate tool calls)
 $env:IBI_DATABASE_URL = "postgresql+psycopg://ibi:ibi@localhost:5432/ibi_dev"
 
-# 3. Run the migration for real
+# 3. Run all migrations for real, including the two Phase 1 ones
 .\.venv\Scripts\python.exe -m alembic upgrade head
 
-# 4. Confirm every model table exists with the expected types
-#    (\d+ each table, or use psql / a GUI client) — pay particular
-#    attention to: JSON columns actually created as jsonb (\d observations,
-#    \d theses, \d scenarios), timestamp columns as timestamptz, and that
-#    all foreign keys/nullability match `src/ibi/db/models/*.py` exactly.
+# 4. Confirm the new/changed objects specifically:
+#    \d filings                 -- new table
+#    \d financial_data          -- unit/start_date/accession_number/known_available_at columns
+#    \di uq_financial_data_*    -- the two partial unique indexes exist and
+#                                  show the correct WHERE clause on each
 
 # 5. Run the full test suite against the real database
 .\.venv\Scripts\python.exe -m pytest
 
 # 6. Confirm autogenerate detects zero drift against the models
-#    (an empty diff here is the real confirmation that the hand-written
-#    migration and the ORM models agree, on PostgreSQL specifically)
 .\.venv\Scripts\python.exe -m alembic revision --autogenerate -m "drift check"
 #    -> inspect the generated file; it should contain only `pass` in both
 #       upgrade() and downgrade(). Delete it after inspecting.
@@ -122,7 +128,26 @@ $env:IBI_DATABASE_URL = "postgresql+psycopg://ibi:ibi@localhost:5432/ibi_dev"
 docker rm -f ibi-pg-check
 ```
 
-Until this has been run, treat the migration as **SQLite-verified, PostgreSQL-unverified**.
+## Running SEC EDGAR ingestion (Phase 1)
+
+```powershell
+$env:IBI_SEC_USER_AGENT = "Your Organization your-contact@example.com"
+.\.venv\Scripts\python.exe -c "from ibi.data_engine.sec_edgar.ingest import run_ingestion; print(run_ingestion())"
+```
+
+Ingests the fixed universe (`ibi.data_engine.sec_edgar.fixed_universe`) —
+currently Apple and Microsoft only — into whatever `IBI_DATABASE_URL`
+points at. Safe to re-run: idempotent (see DECISIONS.md). Requires a real
+`IBI_SEC_USER_AGENT` (SEC's fair-access policy; not a secret, but must be a
+genuine contact — see SECURITY.md).
+
+To run the opt-in live-network test suite for this connector (skipped by
+default; makes real calls to `data.sec.gov`):
+
+```powershell
+$env:IBI_SEC_USER_AGENT = "Your Organization your-contact@example.com"
+.\.venv\Scripts\python.exe -m pytest -m live_network tests/integration/test_sec_edgar_live.py
+```
 
 ## Project layout
 

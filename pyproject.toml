@@ -32,7 +32,9 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
     "integration: requires a live database or external service",
+    "live_network: makes real external network calls; opt-in only, never run by default",
 ]
+addopts = "-m \"not live_network\""
 
 [tool.ruff]
 line-length = 100

@@ -18,6 +18,16 @@
 - No credential has a default value that looks like a real one; missing
   configuration fails validation at startup (via pydantic) rather than
   proceeding with a guessed value.
+- `IBI_SEC_USER_AGENT` is **not a secret** — it's a plain string SEC
+  requires on every EDGAR API request (their fair-access policy) and may
+  log/use to contact the requester. It's still handled through `Settings`
+  like everything else, and `Settings.require_sec_user_agent()` follows the
+  same fail-loudly-at-the-call-site pattern as the Anthropic key. Never
+  leave it as a placeholder/generic string in any real, sustained use —
+  it must identify a genuine contact.
+- Raw SEC snapshots (`IBI_RAW_DATA_DIR`, default `data/raw/`) contain only
+  public SEC filing data, never a credential — still gitignored because
+  it's runtime data, not source code.
 
 ## Logging
 
@@ -85,6 +95,12 @@ phase, not before.
   etc.) and is bypassed by any write that doesn't go through them (raw SQL,
   a future non-Python client). See docs/data_architecture.md. Deferred
   intentionally, not an oversight — see DECISIONS.md.
+- The `IBI_SEC_USER_AGENT` value used during Phase 1's own development/live
+  testing (`InvestmentIntelligencePlatform-Phase1Dev/0.1 (contact:
+  dev@investment-intelligence-platform.example)`) is a placeholder using an
+  RFC 2606 reserved `.example` domain — intentionally non-deceptive for
+  development, but must be replaced with a real, monitored contact before
+  any sustained or scheduled use, per SEC's fair-access policy.
 
 ## Remediation audit findings (this pass)
 

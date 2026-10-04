@@ -149,6 +149,60 @@ $env:IBI_SEC_USER_AGENT = "Your Organization your-contact@example.com"
 .\.venv\Scripts\python.exe -m pytest -m live_network tests/integration/test_sec_edgar_live.py
 ```
 
+## Phase 2B: calculation results
+
+No CLI is provided yet. Build a metric's generation from Python, inside
+`session_scope()` (which commits on success and rolls back on error):
+
+```python
+from ibi.db.base import session_scope
+from ibi.financial_engine.results_store import VersionPair, build_generation
+
+with session_scope() as session:
+    print(build_generation(session, "CIK0000320193", "ibi:gross_margin", VersionPair("1", "1")))
+```
+
+`build_generation` raises before writing anything on any integrity failure
+(`RetroactiveDriftError`, `ResultDriftError`, `InputMutationError`,
+`PolicyManifestMismatchError`, `InputIntegrityError`).
+
+Run the result-store tests against PostgreSQL. They create and drop
+tables, so point them only at a **dedicated, disposable** database whose
+name contains `test`. They never use `IBI_DATABASE_URL`:
+
+```powershell
+$env:IBI_TEST_POSTGRES_URL = "postgresql+psycopg://<role>@localhost:5432/ibi_phase2b_test"
+.\.venv\Scripts\python.exe -m pytest tests/integration/test_metric_results_store.py
+```
+
+Run the approved full-data validation (live SEC, in memory, writes nothing):
+
+```powershell
+$env:IBI_SEC_USER_AGENT = "Your Organization your-contact@example.com"
+.\.venv\Scripts\python.exe -m pytest -m live_network -s tests/integration/test_phase2b_full_data_live.py
+```
+
+### Read-only check of what the live database contains
+
+Run this in your own terminal. psql prompts for the password without
+echoing it; don't use `PGPASSWORD`. `PGOPTIONS` forces every session
+read-only, and each `SHOW transaction_read_only` must print `on`:
+
+```powershell
+$env:PGOPTIONS = "-c default_transaction_read_only=on"
+$psql = "C:\Program Files\PostgreSQL\18\bin\psql.exe"
+& $psql -X -v ON_ERROR_STOP=1 -h localhost -U <role> -d <database> `
+  -c "SHOW transaction_read_only;" `
+  -c "SELECT version_num FROM alembic_version;" `
+  -c "SELECT 'entities' t, count(*) FROM entities UNION ALL SELECT 'filings', count(*) FROM filings UNION ALL SELECT 'financial_data', count(*) FROM financial_data;" `
+  -c "SELECT entity_id, epistemic_label, count(*), min(created_at), max(created_at) FROM financial_data GROUP BY 1,2 ORDER BY 1,2;" `
+  -c "SELECT regexp_replace(content_ref, '[^\\/]+$', '') AS archive_dir, count(*) FROM source_documents GROUP BY 1;"
+Remove-Item Env:PGOPTIONS
+```
+
+The output contains counts and an archive directory path only. Share it,
+redacting names if you want, before deciding on any backfill.
+
 ## Project layout
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the domain package layout and

@@ -32,9 +32,14 @@ def portable_json() -> TypeEngine:
 
 
 class TimestampMixin:
-    """`created_at` is set once, in the database, and never updated —
-    consistent with the platform's immutable-raw-data principle. A
-    correction is a new row, not an update to this one."""
+    """`created_at` is set once, at insert, and never updated — consistent
+    with the platform's immutable-raw-data principle. A correction is a new
+    row, not an update to this one.
+
+    It is set by the application clock (UTC), not by a database default.
+    Every table uses this same clock, which is what lets system-time
+    comparisons across tables (e.g. Phase 2B's "what did the system answer
+    at time S" reads) stay consistent; it is not a commit timestamp."""
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)

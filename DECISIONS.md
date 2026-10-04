@@ -267,6 +267,160 @@ The partial-index approach (standard PostgreSQL, unlike the SQLite
 result confirms it rather than merely assuming it. See DEVELOPMENT.md for
 the procedure, kept for reproducibility.
 
+## Phase 2B: calculation results
+
+Design went through three review revisions before implementation was
+authorized. Implementation follows the consolidated design's
+recommendations as defaults, with these explicit owner decisions:
+
+| # | Approved decision | Where |
+|---|---|---|
+| C1 | Fail closed when no single accession is a complete, consistent basis; never mix bases (`NO_SINGLE_BASIS`) | `resolver.resolve` |
+| C2 | Record new evidence and confirmations only when they change the resolved state or provenance; no redundant rows | per-period hash dedupe; append-only rows per version pair (no copying across generations) |
+| C3 | Retroactive drift is an error; historical results are never rewritten; remedy is an explicit new policy version or a separately approved recovery | `RetroactiveDriftError` |
+| C4 | Read-only check of the live database first; without original snapshots, existing facts are neither updated nor given invented form types | No backfill implemented (see below) |
+| C5 | Portable, tested CHECK constraints on the new result tables | migration `e7f3a2c91b40` |
+| C6 | Validate the 8-K/form behaviour on full live SEC data for AAPL/MSFT, in memory only, nothing persisted | `tests/integration/test_phase2b_full_data_live.py` (opt-in) |
+| C7 | Strict fail-closed for divergence from other/unknown forms | `UNCLASSIFIED_FORM_DIVERGENCE` |
+| C8 | Exact `Decimal` equality, no tolerances | resolver, identity checks |
+| C9 | `NUMERIC(28,10)`, explicit half-even rounding in Python | `formulas.quantize_result` |
+
+Also required: facts and calculations stay separate (`financial_data` is
+facts-only; results in `metric_results`, provenance in
+`metric_result_inputs`); the three-tier form policy, including eligible
+complete 8-K/8-K/A recasts; every historical query takes an explicit version
+pair and never mixes pairs.
+
+### 8-K eligibility: implemented, but no Phase 2B evidence source qualifies one
+
+An 8-K/8-K/A becomes a basis candidate only if both of these hold:
+
+- it carries every evidence kind the policy requires; and
+- every identity check of the metric can be evaluated inside the 8-K and
+  passes (`resolver._is_eligible_basis`).
+
+A complete set of tags is never sufficient on its own. An eligible 8-K
+basis is annotated `revision_kind = recast`. Tests cover the qualifying
+path and every way it can fail.
+
+Policy v1 requires `xbrl_instance_restatement_classified`. That
+classification needs the filing's own XBRL instance (dimensional
+restatement members, error-correction flags), which companyfacts drops and
+Phase 2B does not ingest. So `results_store.RECAST_EVIDENCE` is
+deliberately empty, and under v1 no 8-K qualifies yet. 8-K facts corroborate
+when they are equal; when they diverge, the result is
+`UnverifiedRevision(UNCLASSIFIED_8K_DIVERGENCE)`.
+
+Supplying real evidence later means two things:
+
+- an approved new evidence source; and
+- feeding its classifications in as a hashed snapshot input, which changes
+  `input_set_hash` and therefore requires a new policy version under C3.
+
+It is never an inference from tags.
+
+### Implementation-time reconciliation (second authorization)
+
+Before implementation I checked the uncommitted draft against the final
+authorization and found four gaps. All four were corrected; none required
+stopping.
+
+1. **Provenance table name.** The draft named it `metric_result_evidence`.
+   It is renamed to `metric_result_inputs` as required. It still stores
+   every relation, not only inputs.
+2. **C2 (no redundant rows).** The draft copied a metric's full history
+   into every generation. Under C3, history before a generation's last
+   epoch can never change, so results are now append-only per version
+   pair. Each row is written once, by the generation that first produced
+   it, and a generation's view is the pair's rows with
+   `generation_id <= g`.
+3. **8-K eligibility path.** The draft hard-wired "never eligible". It is
+   now a real, tested eligibility gate driven by the policy's required
+   evidence kinds.
+4. **Explicit version pairs.** The draft's `read_active` and system-time
+   reads inferred the pair from activations. All reads now take a
+   `VersionPair`. `active_versions()` only looks one up, and
+   `require_values` rejects a series that mixes pairs.
+
+**Migration ID.** Because the schema changed, the uncommitted draft
+migration `c2b7e4f19a6d` was replaced by `e7f3a2c91b40` with a new revision
+id. If the draft was ever applied somewhere, Alembic fails loudly instead
+of silently accepting a different schema.
+
+### Pre-implementation consistency review — findings and resolutions
+
+1. **C3 differs from revision 3's recommendation.** Revision 3 proposed
+   that retroactive changes create a new generation pending review. The
+   owner chose to block them instead. Implemented as chosen, so the review
+   table was not built.
+2. **Blocking could leave a stale generation readable.** A blocked build
+   leaves the previous generation in place, and the current-knowledge
+   reader could have served it as if it were up to date. To prevent that,
+   `read_current` checks for facts, quarantines and 4.02 filings the
+   generation never saw that are available by `as_of`, and returns
+   `UnverifiedRevision(GENERATION_BEHIND_INPUTS)` when it finds any.
+3. **`server_default=now()` for new tables (revision 3, C13) was not
+   applied.** System-time reads compare generation, activation and fact
+   `created_at` values against each other. Mixing a database clock on the
+   new tables with the application clock on existing ones would make those
+   comparisons inconsistent, so every table keeps the application clock.
+   The `TimestampMixin` docstring, which wrongly said "set in the
+   database", was corrected.
+4. **Phase 1 rows have no form type.** Rows ingested before Phase 2B have a
+   NULL `source_form_type`, and re-ingestion never fills it, because the
+   duplicate check skips existing facts. The resolver treats NULL as an
+   unclassified form, so those facts can never be a basis and their
+   divergence fails closed. Any backfill is a separate decision.
+5. **4.02 non-reliance has no lookback window in the evidence.** The
+   affected periods can't be determined from metadata. The most
+   conservative scope is implemented: every period ending before the 8-K's
+   filing date, until a later periodic basis supersedes it. Item coverage
+   is limited to the submissions "recent" window, and every result records
+   this as `non_reliance_scan = submissions_recent_window_only`.
+6. **Quarantine is retroactive by nature.** Removing a fact from history is
+   blocked under C3 just like any other retroactive change, so recovery
+   from a bad fact also needs an explicit new policy version or a
+   separately approved recovery procedure. This follows directly from C3.
+
+### Scope implemented vs deferred
+
+- **Implemented:**
+  - single-period metrics `ibi:gross_margin` and `ibi:free_cash_flow`
+    (calculation version "1", policy "1");
+  - generations with append-only results per version pair, typed readers
+    M1/M2/M3 taking explicit version pairs, quarantine, and version
+    activation lookup;
+  - the evidence-gated 8-K eligibility path (no qualifying evidence source
+    in Phase 2B);
+  - the per-entity advisory lock, shared by ingestion and builds;
+  - form type and 8-K items stored at ingestion, with a companyfacts vs
+    submissions form-consistency check (`FormTypeMismatchError`, isolated
+    per entity).
+- **Deferred:**
+  - **ROIC:** the NOPAT and invested-capital definitions are not approved.
+  - **Cross-period metrics:** deferred by design.
+  - **Paginated older submissions history (`filings.files[]`):** the page
+    format could not be verified live, because no SEC User-Agent is
+    configured in this environment, and implementing it from memory would
+    risk ingestion integrity.
+  - **Ingesting filing XBRL instances.**
+- **Pending review:** the concept→tag map v1 (`policy._CONCEPTS_V1`) needs
+  analyst review before production use.
+
+### Validation status (at implementation time)
+
+- **SQLite:** full suite passing, including migration up/down/up and
+  `alembic check` with no drift against a fresh database.
+- **PostgreSQL:** **not validated.**
+  - The existing configuration could not connect, and no credentials were
+    requested or guessed.
+  - The new store tests run on PostgreSQL only against a dedicated database
+    named in `IBI_TEST_POSTGRES_URL`, never against `IBI_DATABASE_URL`.
+- **Live database contents:** whether it holds Phase 1 facts is **unknown**.
+  See DEVELOPMENT.md for the read-only check.
+- **Full-data SEC validation (C6):** **not run**, because
+  `IBI_SEC_USER_AGENT` is not set. The test is ready to run opt-in.
+
 ## Open questions requiring a human decision
 
 - Which market-data vendor(s) to integrate first, and budget for it.
@@ -279,4 +433,11 @@ the procedure, kept for reproducibility.
 - Whether/when to add database-level `CHECK` constraints (e.g. confidence
   ranges, enum-value membership) and indexes on foreign-key columns — see
   docs/data_architecture.md's PostgreSQL-specific review. Deferred
-  intentionally rather than added speculatively.
+  intentionally rather than added speculatively. (Phase 2B added CHECKs to
+  its new tables only.)
+- Phase 2B: whether existing Phase 1 `financial_data` rows (if any exist in
+  the live database) should get `source_form_type`, and by what
+  provenance-verified procedure.
+- Phase 2B: review of the concept→tag map v1; definitions for ROIC;
+  whether to ingest paginated submissions history and filing XBRL
+  instances (required before any 8-K can qualify as a basis).

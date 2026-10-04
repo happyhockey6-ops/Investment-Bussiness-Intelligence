@@ -43,18 +43,26 @@ conflate but serve different purposes:
 - `retrieval_date` — describes the system (when this platform learned it).
 
 Keeping `retrieval_date` distinct from the others is what makes
-point-in-time backtesting possible: `ibi.backtesting_engine.interfaces.PointInTimeDataset`
-filters purely on `retrieval_date <= as_of`, regardless of what the record
-claims about when the underlying event occurred. This is also what
-protects against using a *restated* figure (e.g. revised GAAP earnings) as
-if it had been known at the time of original publication — the restatement
-arrives as a new record with a later `retrieval_date`.
+point-in-time backtesting possible. **Correction (Phase 2B):** an earlier
+version of this document said point-in-time reads filter on
+`retrieval_date`. That was superseded in Phase 1 (see DECISIONS.md): the
+primary filter is each record's own *availability* timestamp
+(`financial_data.known_available_at`, and for calculations
+`metric_results.effective_from`), because a backfilling ingestion gives
+years of history the same `retrieval_date`. `retrieval_date` remains only a
+stricter, optional "what had our system fetched" ceiling. A *restated*
+figure arrives as a new record with a later availability timestamp, so it
+can never be used as if it had been known at original publication.
 
 ## Uncertainty, not fabrication
 
 Alongside epistemic labels, `ibi.core.types` defines the vocabulary for "we
 don't have an answer": `Unknown`, `InsufficientEvidence`,
-`ConflictingEvidence` (collectively `Uncertain`). Any function that might
+`ConflictingEvidence`, and (Phase 2B) `UnverifiedRevision` — later evidence
+diverges and cannot be classified — and `IncompatibleBasis` — a
+deterministic consistency check failed (collectively `Uncertain`). Each
+carries a machine-readable `UncertaintyReason` code and the evidence it was
+derived from. Any function that might
 not be able to produce a real value should return `T | Uncertain`, not
 `None` (which means "does not apply", a different thing) and never a
 guessed value. `financial_engine.metrics` demonstrates the pattern: dividing

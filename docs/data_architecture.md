@@ -13,12 +13,18 @@ the ability to reconstruct "what did we believe, and when."
 
 ## Versioning
 
-`db.models.financial.FinancialDataPointRecord.calculation_version` ties a
-stored `CALCULATION`-labeled value to the exact `financial_engine` formula
-version that produced it. When a formula changes (a bug fix, a definitional
-change in how a metric is computed), historical rows keep their original
-`calculation_version` rather than being silently reinterpreted under the
-new formula — reproducibility of a past analysis depends on this.
+Every stored calculation is tied to the exact formula version
+(`calculation_version`) *and* the exact input-selection rules
+(`selection_policy_version`) that produced it. When either changes (a bug
+fix, a definitional change, a new tag mapping), historical results keep
+their original versions rather than being silently reinterpreted —
+reproducibility of a past analysis depends on this.
+
+**Phase 2B update:** calculations are stored in `metric_results` (see
+"Phase 2B: calculation results" below), not in `financial_data`.
+`financial_data.calculation_version` predates that decision; it is left in
+place, unused (always NULL), because dropping it would be a destructive
+migration. `financial_data` holds facts only.
 
 ## Point-in-time design
 
@@ -55,12 +61,20 @@ table.
 ## Reproducibility
 
 A `CALCULATION` row must be re-derivable from its recorded inputs and
-`calculation_version` alone — this is why `financial_engine` functions are
-required to be pure (see ARCHITECTURE.md's determinism section) and why
+versions alone — this is why `financial_engine` functions are required to
+be pure (see ARCHITECTURE.md's determinism section) and why
 `MetricCalculation.metric_id`/`calculation_version` exist as first-class
-concepts rather than being inferred from context.
+concepts rather than being inferred from context. Phase 2B enforces this
+mechanically: every build re-derives the previous generation from its own
+input snapshot and refuses to write if the stored rows are not reproduced
+exactly.
 
 ## Exact table inventory
+
+**Phase 2B update:** 22 tables — the 17 below plus `metric_generations`,
+`metric_results`, `metric_result_inputs`, `metric_version_activations`
+and `fact_quarantine` (migration `e7f3a2c91b40`). A live inspection shows
+23 including `alembic_version`.
 
 17 tables are defined, identically, across `src/ibi/db/models/*.py` and the
 Alembic migration chain (verified by `tests/integration/test_alembic_migration.py`,
@@ -205,9 +219,104 @@ SEC EDGAR ingestion," for the full history. Summary:
   verbatim to `IBI_RAW_DATA_DIR` (default `data/raw/`, gitignored — runtime
   data, not source code) and referenced from `source_documents.content_ref`.
 
+## Phase 2B: calculation results
+
+**Where things live.** `financial_data` holds facts only. Each build is a
+**generation** (`metric_generations`): one entity, one metric, one
+`(calculation_version, selection_policy_version)` pair, over one exactly
+identified input snapshot. The snapshot is identified by the highest
+`financial_data`, `filings` and `fact_quarantine` ids the build saw (which
+select it) plus `input_set_hash` (which proves it can still be
+reproduced). `policy_manifest_hash` pins the policy content the version
+string meant.
+
+**Results.** `metric_results` holds one row per (entity, metric, version
+pair, period, epoch).
+- *Epochs:* an epoch is a distinct `known_available_at` of a relevant fact,
+  or of an 8-K item 4.02 filing. A row is written only when the resolved
+  state or its provenance changes, so the latest row with
+  `effective_from <= T` is exactly the answer as of T.
+- *Append-only per version pair:* retroactive drift is an error, so a new
+  generation only ever adds epochs after the previous one's last epoch.
+  Each row is written once, by the generation that first produced it
+  (`generation_id`). Unchanged history is never copied. Generation g's view
+  is the pair's rows with `generation_id <= g`.
+- *Status:* `value` or one of four uncertainty states. A CHECK constraint
+  makes `value` NULL, and `reason_code` non-NULL, for every uncertain row.
+- *Provenance:* `metric_result_inputs` links each row to every fact that
+  informed it, labelled `input`, `corroborating`, `conflicting`,
+  `unverified_revision`, `superseded_basis` or `check_term`.
+
+**Selection (policy v1, `ibi.financial_engine.policy`).**
+- *Single basis:* all inputs come from one eligible accession, the latest
+  one reporting every input for the exact period. Figures are never
+  combined across filings.
+- *Eligible:* 10-K, 10-Q and their /A amendments.
+- *8-K/8-K/A:* eligible only if the accession carries every evidence kind
+  the policy requires, and every identity check of the metric can be
+  evaluated and passes inside it. A complete set of tags alone never
+  qualifies. v1 requires `xbrl_instance_restatement_classified`, which only
+  the filing's own XBRL instance can provide and which is not ingested, so
+  under v1 no 8-K qualifies yet. An eligible 8-K basis is annotated
+  `revision_kind = recast`.
+- *Other and unknown forms:* never eligible.
+- *Divergence fails closed:* any later or simultaneous evidence that
+  diverges, from any form, makes the result uncertain. It is never resolved
+  by choosing a number.
+- *Exact comparisons:* values use exact `Decimal` equality, and the identity
+  checks (e.g. gross profit = revenue − cost) are evaluated inside the
+  basis.
+- *Non-reliance:* an 8-K item 4.02 filed after the basis covers every period
+  ending before it.
+- See `ibi.financial_engine.resolver` for the precedence order.
+
+**Time axes.**
+| Axis | Field |
+|---|---|
+| Input vintage (world time) | `financial_data.known_available_at` → `metric_results.effective_from` |
+| Formula | `calculation_version` |
+| Selection rules | `selection_policy_version` |
+| Input snapshot | generation watermarks + `input_set_hash` |
+| System time | `created_at`, application clock, on every table |
+
+**Reads (`ibi.financial_engine.results_store`).** The reader never filters
+by status, so an uncertain epoch is never skipped in favour of an older
+value. Every read takes an explicit `VersionPair`. There is no default
+pair, no fallback to another pair, and `require_values` rejects a series
+that mixes pairs.
+- **M1 `read_pinned`:** exactly what generation g answered, forever. The
+  generation must belong to the given entity, metric and pair.
+- **M2 `read_current`:** the latest generation for the pair. It returns
+  `UnverifiedRevision(GENERATION_BEHIND_INPUTS)` instead of an answer
+  whenever facts, quarantines or 4.02 filings that the generation never saw
+  were already available by `as_of`. That includes a build blocked by
+  retroactive drift.
+- **M3 `read_at_system_time`:** what the latest generation of the pair that
+  existed at system time S answered.
+- **`active_versions(metric, S)`:** only *looks up* which pair was
+  designated active. The caller then passes that pair explicitly.
+
+**Build and recovery rules.**
+- *Unchanged snapshot:* rebuilding writes nothing.
+- *Stored inputs changed:* `InputMutationError`.
+- *Stored rows not reproduced:* `ResultDriftError`.
+- *Same policy version, different content:* `PolicyManifestMismatchError`.
+- *Retroactive change:* inputs that would change history at or before the
+  previous generation's last epoch raise `RetroactiveDriftError` and write
+  nothing. This includes a fact discovered late, and a newly quarantined
+  fact. The approved remedy is an explicit new selection-policy version,
+  which builds a fresh history, or a separately approved recovery
+  procedure. Historical results are never rewritten, and old generations
+  remain readable through M1/M3.
+- *Bad facts:* excluded by an append-only `fact_quarantine` row. A fact is
+  never edited or deleted.
+
 ## What's not yet built
 
 Every other domain package's `SourceConnector`-equivalent remains
 interfaces only — `sec_edgar` is the first and only concrete ingestion
-source. No financial-metric computation runs on ingested SEC data yet (no
-`financial_engine` consumer exists for it), no market data, no AI research.
+source. Phase 2B computes two single-period metrics (`ibi:gross_margin`,
+`ibi:free_cash_flow`) on ingested SEC facts. Cross-period metrics (growth),
+ROIC (its NOPAT and invested-capital definitions are not yet approved), the
+filing XBRL instances needed to classify 8-K recasts, older paginated
+submissions history, market data and AI research are not built.

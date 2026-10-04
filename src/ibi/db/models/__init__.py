@@ -9,6 +9,13 @@ from ibi.db.models.evidence import ClaimRecord, EvidenceRecord
 from ibi.db.models.filing import FilingRecord
 from ibi.db.models.financial import FinancialDataPointRecord
 from ibi.db.models.market import MarketDataBarRecord
+from ibi.db.models.metric_result import (
+    FactQuarantineRecord,
+    MetricGenerationRecord,
+    MetricResultInputRecord,
+    MetricResultRecord,
+    MetricVersionActivationRecord,
+)
 from ibi.db.models.observation import ObservationRecord
 from ibi.db.models.prediction import OutcomeRecord, PredictionRecord
 from ibi.db.models.provider import ProviderCallRecord
@@ -23,9 +30,14 @@ __all__ = [
     "EventRecord",
     "ClaimRecord",
     "EvidenceRecord",
+    "FactQuarantineRecord",
     "FilingRecord",
     "FinancialDataPointRecord",
     "MarketDataBarRecord",
+    "MetricGenerationRecord",
+    "MetricResultInputRecord",
+    "MetricResultRecord",
+    "MetricVersionActivationRecord",
     "ObservationRecord",
     "OutcomeRecord",
     "PredictionRecord",

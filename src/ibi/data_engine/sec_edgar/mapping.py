@@ -52,6 +52,9 @@ class FilingRow:
     primary_document: str | None
     acceptance_date_time: datetime | None
     availability: Availability
+    items: str | None = None
+    """8-K item codes, e.g. "4.02,9.01" ("" for forms without items; None
+    if SEC's response did not include the field at all)."""
 
 
 def parse_submissions(entity_id: str, raw: dict) -> list[FilingRow]:
@@ -69,6 +72,7 @@ def parse_submissions(entity_id: str, raw: dict) -> list[FilingRow]:
     acceptance_raw = recent.get("acceptanceDateTime", [None] * n)
     report_dates_raw = recent.get("reportDate", [""] * n)
     primary_documents = recent.get("primaryDocument", [None] * n)
+    items_raw = recent.get("items", [None] * n)
 
     rows: list[FilingRow] = []
     for i in range(n):
@@ -86,6 +90,7 @@ def parse_submissions(entity_id: str, raw: dict) -> list[FilingRow]:
                 primary_document=primary_documents[i] or None,
                 acceptance_date_time=acceptance,
                 availability=compute_known_available_at(filing_date, acceptance),
+                items=items_raw[i],
             )
         )
     return rows
@@ -102,6 +107,15 @@ class FactRow:
     accession_number: str
     epistemic_label: EpistemicLabel
     availability: Availability
+    form_type: str | None = None
+    """The fact entry's own `form` (e.g. "10-K", "8-K"). Kept per fact
+    because the `filings` table only covers submissions' "recent" window."""
+
+
+class FormTypeMismatchError(ValueError):
+    """A fact's companyfacts `form` disagrees with its filing's submissions
+    `form` — an integrity failure in SEC's own metadata or in our parsing;
+    never resolved by picking one."""
 
 
 def parse_companyfacts(
@@ -128,8 +142,14 @@ def parse_companyfacts(
             for unit, entries in tag_data.get("units", {}).items():
                 for entry in entries:
                     accession_number = entry["accn"]
+                    form_type = entry.get("form") or None
                     filing = filing_lookup.get(accession_number)
                     if filing is not None:
+                        if form_type is not None and form_type != filing.form_type:
+                            raise FormTypeMismatchError(
+                                f"{entity_id} {accession_number}: companyfacts form "
+                                f"{form_type!r} != submissions form {filing.form_type!r}"
+                            )
                         availability = filing.availability
                     else:
                         filed_date = _parse_date(entry["filed"])
@@ -147,6 +167,7 @@ def parse_companyfacts(
                             accession_number=accession_number,
                             epistemic_label=EpistemicLabel.FACT,
                             availability=availability,
+                            form_type=form_type,
                         )
                     )
     return rows

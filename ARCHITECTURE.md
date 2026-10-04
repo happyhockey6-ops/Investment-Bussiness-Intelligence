@@ -82,8 +82,9 @@ market-data vendor is selected in Phase 0.
 
 - Raw source data is immutable; corrections are new versioned records.
 - Every numeric/categorical result that might not be knowable is typed as
-  `T | Unknown | InsufficientEvidence | ConflictingEvidence`
-  (`ibi.core.types`), never silently defaulted or fabricated.
+  `T | Uncertain` (`Unknown | InsufficientEvidence | ConflictingEvidence |
+  UnverifiedRevision | IncompatibleBasis`, `ibi.core.types`), never silently
+  defaulted or fabricated.
 - `financial_engine` functions return `InsufficientEvidence` rather than
   raising or returning a nonsensical number for undefined arithmetic (e.g.
   division by zero in a margin calculation).
@@ -128,3 +129,15 @@ two-company universe is not to be expanded without a deliberate decision
 (see DECISIONS.md). One new table (`filings`) and five new columns on
 `financial_data` were added, both additively — the Phase 0 migration was
 not modified.
+
+## Phase 2B: what changed
+
+`financial_engine` now computes metrics on ingested SEC facts and stores
+their full point-in-time history. It keeps the `data_engine.sec_edgar`
+split between pure and I/O code: `policy.py`, `formulas.py`, `resolver.py`
+and `metrics.py` are pure (no I/O, no clock — enforced by a test), and
+`results_store.py` is the only module that reads or writes the new result
+tables (also enforced by a test). Downstream code reads results only
+through its typed readers, which return `ResolvedMetric | Uncertain` and
+never a bare number. See docs/data_architecture.md, "Phase 2B", and
+DECISIONS.md, "Phase 2B: calculation results".

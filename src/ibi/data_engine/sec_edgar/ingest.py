@@ -24,8 +24,13 @@ from ibi.core.errors import ProviderError
 from ibi.data_engine.sec_edgar.client import SecHttpClient, SecHttpClientConfig
 from ibi.data_engine.sec_edgar.connector import SecEdgarConnector
 from ibi.data_engine.sec_edgar.fixed_universe import FIXED_UNIVERSE, FixedUniverseEntity
-from ibi.data_engine.sec_edgar.mapping import parse_companyfacts, parse_submissions
+from ibi.data_engine.sec_edgar.mapping import (
+    FormTypeMismatchError,
+    parse_companyfacts,
+    parse_submissions,
+)
 from ibi.db.base import session_scope
+from ibi.db.locks import acquire_entity_write_lock
 from ibi.db.models import EntityRecord, FilingRecord, FinancialDataPointRecord, SourceDocumentRecord
 from ibi.logging import get_logger, log_context
 
@@ -78,6 +83,7 @@ def ingest_entity(
     session: Session, connector: SecEdgarConnector, entity: FixedUniverseEntity, data_dir: Path
 ) -> IngestResult:
     result = IngestResult(entity_id=entity.entity_id)
+    acquire_entity_write_lock(session, entity.entity_id)
     _ensure_entity(session, entity)
 
     raw_records = connector.fetch(entity.entity_id)
@@ -124,6 +130,7 @@ def ingest_entity(
                     known_available_at=frow.availability.known_available_at,
                     availability_precision=frow.availability.availability_precision,
                     source_document_id=bodies["submissions"]["source_document_id"],
+                    items=frow.items,
                 )
             )
             result.filings_written += 1
@@ -161,6 +168,7 @@ def ingest_entity(
                     known_available_at=frow.availability.known_available_at,
                     availability_precision=frow.availability.availability_precision,
                     source_document_id=bodies["companyfacts"]["source_document_id"],
+                    source_form_type=frow.form_type,
                 )
             )
             result.facts_written += 1
@@ -182,7 +190,7 @@ def run_ingestion(settings: Settings | None = None) -> IngestSummary:
         try:
             with session_scope(settings) as session:
                 result = ingest_entity(session, connector, entity, data_dir)
-        except ProviderError as e:
+        except (ProviderError, FormTypeMismatchError) as e:
             logger.warning(
                 f"sec_edgar ingestion failed for entity: {e}",
                 extra=log_context(

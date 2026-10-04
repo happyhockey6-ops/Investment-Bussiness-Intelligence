@@ -37,3 +37,8 @@ class FilingRecord(TimestampMixin, Base):
     known_available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     availability_precision: Mapped[str] = mapped_column(String(32))
     source_document_id: Mapped[int | None] = mapped_column(ForeignKey("source_documents.id"))
+    items: Mapped[str | None] = mapped_column(String(128))
+    """SEC's comma-separated 8-K item codes (e.g. "4.02,9.01") from
+    submissions.json (Phase 2B). Empty for forms without items; NULL for rows
+    ingested before Phase 2B. Only the submissions "recent" window is read,
+    so item coverage of older filings is incomplete."""

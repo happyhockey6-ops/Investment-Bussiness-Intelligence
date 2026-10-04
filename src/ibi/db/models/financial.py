@@ -69,3 +69,9 @@ class FinancialDataPointRecord(TimestampMixin, Base):
     known_available_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     availability_precision: Mapped[str | None] = mapped_column(String(32))
     source_document_id: Mapped[int | None] = mapped_column(ForeignKey("source_documents.id"))
+    source_form_type: Mapped[str | None] = mapped_column(String(32))
+    """The SEC form (e.g. "10-K", "8-K") of the filing this fact came from,
+    read from the fact's own companyfacts entry (Phase 2B). NULL for rows
+    ingested before Phase 2B — never backfilled silently; the Phase 2B
+    resolver treats a NULL form as unclassified (see
+    `ibi.financial_engine.policy`)."""

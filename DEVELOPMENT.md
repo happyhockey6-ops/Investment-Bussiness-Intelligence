@@ -38,10 +38,10 @@ import the codebase or run the unit tests.
 ```
 
 This runs the full suite, including a few integration tests that use an
-in-memory/temporary SQLite database (no external service needed) and one
-(`tests/integration/test_postgres_connection.py`) that attempts a real
-PostgreSQL connection and self-skips within a few seconds if none is
-reachable at `IBI_DATABASE_URL`.
+in-memory/temporary SQLite database (no external service needed) plus PostgreSQL cases that use only `IBI_TEST_POSTGRES_URL`. Without a
+dedicated test URL, PostgreSQL cases skip locally; SQLite and unit tests
+still run. The connection check also uses this test URL, never
+`IBI_DATABASE_URL`.
 
 Run only unit tests:
 
@@ -82,51 +82,69 @@ Run only tests that don't require any external service:
    changes, some constraint changes) and has not been run against a live
    database for the Phase 0 baseline migration; see DECISIONS.md.
 
-### Real-PostgreSQL validation procedure
+### PostgreSQL CI and local reproduction
 
-**Status**: complete. The full migration chain — Phase 0's baseline
-(`50445f5a9e59`) and both Phase 1 migrations (`50dc0583f9c1`,
-`a950c85c80b9`) — has been run against a real PostgreSQL 18.6 instance,
-confirmed at head (`a950c85c80b9`), with `alembic check` reporting "No new
-upgrade operations detected." Direct read-only inspection confirmed all 18
-tables (17 application tables + `alembic_version`) and confirmed
-`financial_data`'s indexes are exactly `financial_data_pkey`,
-`uq_financial_data_duration_fact`, and `uq_financial_data_instant_fact` —
-i.e. the two partial unique indexes exist on real PostgreSQL, not just
-SQLite. See DECISIONS.md for the full record.
+`.github/workflows/postgresql.yml` runs on pull requests and pushes to
+`main`, using PostgreSQL 16 and Python 3.13. It installs the existing
+`.[dev]` dependencies, runs Ruff, upgrades all migrations through Phase 2B,
+checks schema drift with `alembic check`, and verifies a full
+`downgrade base` / `upgrade head` round trip. These checks run **before**
+the result-store tests, which intentionally create and drop model tables.
+The final step runs all offline tests, including both PostgreSQL and SQLite
+result-store cases, with `--require-postgres`.
 
-The procedure below is kept for reproducibility (a fresh environment, CI,
-or re-verifying after a future migration) — it is not a pending step:
+Strict mode rejects a missing/malformed/non-PostgreSQL test URL, a database
+name without `test`, selection of no PostgreSQL result-store cases, and any
+skipped integration test. Database connection and SQL errors fail the job.
+Live SEC network tests remain excluded by the existing pytest defaults.
+The job uses only disposable service credentials; it needs no repository
+secrets. Its check name is `PostgreSQL 16 / Python 3.13`; making it a required
+branch-protection check is a separate repository-settings action.
 
-```powershell
-# 1. Start a local PostgreSQL instance (Docker is the fastest path, if available)
-docker run --name ibi-pg-check -e POSTGRES_PASSWORD=ibi -e POSTGRES_USER=ibi `
-  -e POSTGRES_DB=ibi_dev -p 5432:5432 -d postgres:16
+To reproduce on macOS/Linux, activate the project virtual environment and
+run the following. **Both URLs must point only to a new disposable database.**
+The downgrade and result-store tests destroy its tables. Never substitute
+an application or production database URL.
 
-# 2. Point configuration at it (same-invocation only — this session's shell
-#    state does not persist a $env: assignment across separate tool calls)
-$env:IBI_DATABASE_URL = "postgresql+psycopg://ibi:ibi@localhost:5432/ibi_dev"
+```bash
+docker run --name ibi-pg-check \
+  -e POSTGRES_USER=ibi -e POSTGRES_PASSWORD=ibi_ci_only \
+  -e POSTGRES_DB=ibi_ci_test -p 127.0.0.1:55432:5432 \
+  --health-cmd='pg_isready -U ibi -d ibi_ci_test' \
+  --health-interval=2s --health-timeout=5s --health-retries=15 \
+  -d postgres:16
 
-# 3. Run all migrations for real, including the two Phase 1 ones
-.\.venv\Scripts\python.exe -m alembic upgrade head
+# Wait until this command succeeds before running the checks:
+docker exec ibi-pg-check pg_isready -U ibi -d ibi_ci_test
 
-# 4. Confirm the new/changed objects specifically:
-#    \d filings                 -- new table
-#    \d financial_data          -- unit/start_date/accession_number/known_available_at columns
-#    \di uq_financial_data_*    -- the two partial unique indexes exist and
-#                                  show the correct WHERE clause on each
+export IBI_DATABASE_URL='postgresql+psycopg://ibi:ibi_ci_only@127.0.0.1:55432/ibi_ci_test'
+export IBI_TEST_POSTGRES_URL="$IBI_DATABASE_URL"
 
-# 5. Run the full test suite against the real database
-.\.venv\Scripts\python.exe -m pytest
+# Run each command successfully before continuing (CI fails on any error):
+python -m pip install -e ".[dev]"
+python -m ruff check src tests alembic
+python -m alembic upgrade head
+python -m alembic check
+python -m alembic downgrade base
+python -m alembic upgrade head
+python -m alembic check
+python -m pytest --require-postgres -ra
 
-# 6. Confirm autogenerate detects zero drift against the models
-.\.venv\Scripts\python.exe -m alembic revision --autogenerate -m "drift check"
-#    -> inspect the generated file; it should contain only `pass` in both
-#       upgrade() and downgrade(). Delete it after inspecting.
-
-# 7. Tear down
+# Remove only the disposable container created above:
 docker rm -f ibi-pg-check
+unset IBI_DATABASE_URL IBI_TEST_POSTGRES_URL
 ```
+
+On PowerShell, set the two variables with `$env:IBI_DATABASE_URL = "..."`
+and `$env:IBI_TEST_POSTGRES_URL = $env:IBI_DATABASE_URL`; invoke the same
+Python commands via `.\.venv\Scripts\python.exe -m ...`. Use
+`Remove-Item Env:IBI_DATABASE_URL, Env:IBI_TEST_POSTGRES_URL` afterward.
+
+For just the PostgreSQL integration cases, use
+`python -m pytest --require-postgres -m integration -ra`. For the ordinary
+SQLite/unit development loop, leave `IBI_TEST_POSTGRES_URL` unset and run
+`python -m pytest`; strict mode is opt-in outside CI. Test database names
+must contain `test` as a mistake guard, not as proof a database is disposable.
 
 ## Running SEC EDGAR ingestion (Phase 1)
 

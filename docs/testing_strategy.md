@@ -4,8 +4,8 @@
 
 ```
 tests/
-  conftest.py           shared fixtures (settings-cache isolation)
-  unit/                 no I/O, no external services, run in ~seconds
+  conftest.py           shared fixtures and opt-in PostgreSQL CI guards
+  unit/                 no external services; includes isolated pytest subprocess checks
   integration/           may use a database (in-memory/temp, or real if reachable)
 ```
 
@@ -42,10 +42,23 @@ Run everything: `pytest`. Run only what needs no external service at all:
   actually runs against a temporary SQLite database and produces every
   table `Base.metadata` declares.
 - **Real database connectivity** (`test_postgres_connection.py`, marked
-  `integration`) — attempts a real connection to `IBI_DATABASE_URL` with a
-  short timeout and self-skips if none is reachable, so the suite stays
-  fast and green with no database running, but exercises the real thing
-  automatically once one exists.
+  `integration`) — uses only `IBI_TEST_POSTGRES_URL` with a short timeout.
+  PostgreSQL cases may skip in ordinary local runs without a test database;
+  `--require-postgres` makes missing configuration and integration skips
+  fail instead. Application database configuration is never used for this
+  connection check.
+
+## PostgreSQL CI
+
+`.github/workflows/postgresql.yml` uses a disposable PostgreSQL 16 service
+and Python 3.13. It runs lint, migration upgrade/check/downgrade/upgrade/check,
+then all offline tests with `--require-postgres`. Both backend variants of
+the result-store tests execute; live SEC tests remain deselected. Strict
+mode also refuses a selection containing no PostgreSQL result-store cases.
+`test_postgres_ci.py` verifies the configuration, skip and selection guards
+in isolated pytest subprocesses using pytest's built-in `pytester` plugin.
+See [DEVELOPMENT.md](../DEVELOPMENT.md#postgresql-ci-and-local-reproduction)
+for the equivalent local commands and disposable-database requirements.
 
 ## What's covered in Phase 1 (SEC EDGAR ingestion)
 
@@ -91,7 +104,8 @@ tests in the same commit, following the patterns above:
   deterministic.
 - Anything touching the database should default to the in-memory/temporary
   SQLite pattern used here, with real-PostgreSQL checks marked
-  `integration` and self-skipping when unavailable.
+  `integration`. Skipping when unavailable is allowed locally, but forbidden
+  in the strict PostgreSQL CI run.
 
 ## Configuration test isolation
 

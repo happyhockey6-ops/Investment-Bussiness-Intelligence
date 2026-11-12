@@ -1,10 +1,8 @@
 """Real-database integration check.
 
-Skipped automatically when no PostgreSQL instance is reachable at
-`IBI_DATABASE_URL` — Phase 0 does not require a live database to be present
-for the test suite to pass, per the acceptance criteria (see
-docs/testing_strategy.md), but this test exists so the moment a database is
-available (locally or in CI), it is exercised for real.
+Uses only `IBI_TEST_POSTGRES_URL`, never the application database URL.
+Local runs may skip when no test database is available; --require-postgres
+makes that a failure in CI.
 """
 
 from __future__ import annotations
@@ -12,8 +10,6 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError
-
-from ibi.config import get_settings
 
 pytestmark = pytest.mark.integration
 
@@ -23,9 +19,9 @@ pytestmark = pytest.mark.integration
 _CONNECT_TIMEOUT_SECONDS = 3
 
 
-def test_can_connect_and_select_1():
+def test_can_connect_and_select_1(postgres_test_url, pytestconfig):
     engine = create_engine(
-        get_settings().database_url,
+        postgres_test_url,
         future=True,
         connect_args={"connect_timeout": _CONNECT_TIMEOUT_SECONDS},
     )
@@ -33,4 +29,8 @@ def test_can_connect_and_select_1():
         with engine.connect() as conn:
             assert conn.execute(text("SELECT 1")).scalar() == 1
     except OperationalError:
-        pytest.skip("No reachable PostgreSQL instance at IBI_DATABASE_URL")
+        if pytestconfig.getoption("--require-postgres"):
+            raise
+        pytest.skip("No reachable PostgreSQL instance at IBI_TEST_POSTGRES_URL")
+    finally:
+        engine.dispose()

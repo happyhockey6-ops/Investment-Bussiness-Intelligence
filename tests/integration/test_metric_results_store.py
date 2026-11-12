@@ -9,13 +9,11 @@ database (its name must contain "test"). It deliberately never uses
 from __future__ import annotations
 
 import dataclasses
-import os
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
 from sqlalchemy import create_engine, func, select, text
-from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -57,11 +55,7 @@ def session(request, tmp_path):
     if request.param == "sqlite":
         engine = create_engine(f"sqlite:///{tmp_path / 'store.db'}")
     else:
-        url = os.environ.get("IBI_TEST_POSTGRES_URL")
-        if not url:
-            pytest.skip("IBI_TEST_POSTGRES_URL not set (dedicated PostgreSQL test database)")
-        if "test" not in (make_url(url).database or ""):
-            pytest.skip("IBI_TEST_POSTGRES_URL database name must contain 'test'")
+        url = request.getfixturevalue("postgres_test_url")
         engine = create_engine(url, connect_args={"connect_timeout": 3})
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)

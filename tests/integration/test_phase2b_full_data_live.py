@@ -21,6 +21,7 @@ from ibi.data_engine.sec_edgar.client import SecHttpClient, SecHttpClientConfig
 from ibi.data_engine.sec_edgar.connector import SecEdgarConnector
 from ibi.data_engine.sec_edgar.fixed_universe import FIXED_UNIVERSE
 from ibi.data_engine.sec_edgar.mapping import parse_companyfacts, parse_submissions
+from ibi.data_engine.sec_edgar.source_bytes import decode_sec_json
 from ibi.financial_engine.formulas import FORMULAS
 from ibi.financial_engine.policy import POLICY_V1
 from ibi.financial_engine.resolver import FactView, FilingEvent, compute_history
@@ -33,7 +34,7 @@ def test_full_history_in_memory(entity):
     settings = get_settings()
     client = SecHttpClient(SecHttpClientConfig(user_agent=settings.require_sec_user_agent()))
     bodies = {
-        r.payload["kind"]: r.payload["body"]
+        r.payload["kind"]: decode_sec_json(r.payload["raw_bytes"])
         for r in SecEdgarConnector(client).fetch(entity.entity_id)
     }
     filings = parse_submissions(entity.entity_id, bodies["submissions"])

@@ -63,7 +63,10 @@ class FinancialDataPointRecord(TimestampMixin, Base):
     unit: Mapped[str] = mapped_column(String(32))
     start_date: Mapped[date | None] = mapped_column(Date)
     period_end_date: Mapped[date] = mapped_column(Date)
-    value: Mapped[Numeric | None] = mapped_column(Numeric(24, 6))
+    # Unconstrained NUMERIC: store the reported value exactly. A fixed scale
+    # would silently round (e.g. 0.12345678 -> 0.123457) and break exact
+    # duplicate detection on re-ingest.
+    value: Mapped[Numeric | None] = mapped_column(Numeric())
     epistemic_label: Mapped[str] = mapped_column(String(32))
     calculation_version: Mapped[str | None] = mapped_column(String(32))
     accession_number: Mapped[str | None] = mapped_column(String(32))

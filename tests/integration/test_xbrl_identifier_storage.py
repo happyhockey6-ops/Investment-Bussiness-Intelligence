@@ -22,6 +22,7 @@ from uuid import uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import Text, create_engine, delete, inspect, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DataError, IntegrityError
@@ -198,7 +199,13 @@ def test_downgrade_refuses_long_names_and_roundtrips_short_rows(migrated_databas
     assert isinstance(metric_column(engine)["type"], Text)
     with engine.connect() as connection:
         current = connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one()
-        assert current == REVISION
+    # PostgreSQL rolls the whole downgrade back. SQLite DDL is not transactional,
+    # so later revisions stepped down before this one refused; this revision held.
+    expected = {ScriptDirectory.from_config(config).get_current_head()}
+    if engine.dialect.name == "sqlite":
+        expected.add(REVISION)
+    assert current in expected
+    command.upgrade(config, "head")
     command.check(config)
 
     # Remove only this test's synthetic long row to exercise a safe narrowing.

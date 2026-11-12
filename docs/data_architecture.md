@@ -215,9 +215,39 @@ SEC EDGAR ingestion," for the full history. Summary:
 - **Fixed universe**: exactly two companies (Apple, CIK 320193; Microsoft,
   CIK 789019) — see `ibi.data_engine.sec_edgar.fixed_universe`. Changing
   this list is a deliberate decision, not a routine edit.
-- **Raw snapshot archival**: every fetched JSON response is written
-  verbatim to `IBI_RAW_DATA_DIR` (default `data/raw/`, gitignored — runtime
-  data, not source code) and referenced from `source_documents.content_ref`.
+- **Raw snapshot archival**: every fetched response is archived as the
+  exact bytes SEC returned to `IBI_RAW_DATA_DIR` (default `data/raw/`,
+  gitignored — runtime data, not source code) and referenced from
+  `source_documents.content_ref`. See "Exact source bytes" below.
+
+### Exact source bytes and exact values
+
+Since migration `c4d2e8f1a7b3`:
+
+- **Bytes, not re-serialized JSON.** `SecHttpClient.get_bytes` returns the
+  response body untouched; the connector attaches its SHA-256. Ingestion
+  archives those bytes *before* parsing anything, so an unparseable
+  response is still kept as evidence.
+- **Digest recorded and verified.** `source_documents.content_sha256` and
+  `content_length` describe the archived bytes. The digest is checked
+  against the connector's, and again by reading the file back. A mismatch
+  fails that company (`MalformedSecPayloadError` / `RawSnapshotWriteError`).
+- **Never overwritten.** Files are written to a `.partial` sibling, fsynced,
+  then hard-linked into place, so an existing snapshot can never be
+  replaced. Names carry a digest prefix; files are created read-only.
+- **Decimal-safe parsing.** `source_bytes.decode_sec_json` parses non-integer
+  numbers straight to `Decimal` (never through a binary float), keeps
+  integers exact, rejects `NaN`/`Infinity` tokens, invalid UTF-8 and a BOM.
+- **Exact storage.** `financial_data.value` is unconstrained `NUMERIC`.
+  `NUMERIC(24,6)` silently rounded values with more than six decimals
+  (`0.12345678` → `0.123457`), which also made the exact duplicate check
+  report a false conflict on re-ingest. SQLite, a test backend only, stores
+  NUMERIC as an 8-byte REAL (about 15 significant digits).
+- **Legacy rows.** Source documents archived before this migration keep a
+  NULL digest: their files were re-serialized JSON, so no honest digest of
+  the original response exists, and none is invented.
+- **Downgrade** refuses, changing nothing, while any digest or any value
+  that `NUMERIC(24,6)` cannot hold exactly exists.
 
 ### XBRL identifier storage
 

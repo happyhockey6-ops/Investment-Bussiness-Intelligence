@@ -16,7 +16,6 @@ than a token-bucket implementation this scale doesn't need.
 
 from __future__ import annotations
 
-import json
 import time
 import urllib.error
 import urllib.request
@@ -24,6 +23,7 @@ from dataclasses import dataclass
 
 from ibi.core.errors import ProviderError
 from ibi.core.types import Unknown
+from ibi.data_engine.sec_edgar.source_bytes import decode_sec_json
 from ibi.logging import get_logger, log_context
 
 logger = get_logger(__name__)
@@ -58,11 +58,20 @@ class SecHttpClient:
         if remaining > 0:
             time.sleep(remaining)
 
-    def get_json(self, url: str) -> dict | Unknown:
-        """Return the parsed JSON body, or `Unknown` for a 404 (a normal,
-        expected outcome — not every CIK has data at every endpoint).
+    def get_json(self, url: str) -> object | Unknown:
+        """Decimal-safe parsed body (see `source_bytes.decode_sec_json`), or
+        `Unknown` for a 404. Ingestion uses `get_bytes` instead, so the exact
+        response can be archived before anything is parsed."""
+        raw = self.get_bytes(url)
+        if isinstance(raw, Unknown):
+            return raw
+        return decode_sec_json(raw)
+
+    def get_bytes(self, url: str) -> bytes | Unknown:
+        """Return the exact response body bytes, or `Unknown` for a 404 (a
+        normal, expected outcome — not every CIK has data at every endpoint).
         Raises `ProviderError` for anything else that isn't recoverable
-        after retrying.
+        after retrying. Nothing is decoded or parsed here.
         """
         request = urllib.request.Request(url, headers={"User-Agent": self._config.user_agent})
 
@@ -79,7 +88,7 @@ class SecHttpClient:
                         operation="data_engine.sec_edgar.http_get", provider="sec_edgar"
                     ),
                 )
-                return json.loads(body)
+                return bytes(body)
             except urllib.error.HTTPError as e:
                 if e.code == 404:
                     return Unknown(reason=f"SEC returned 404 for {url}")

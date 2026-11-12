@@ -1,7 +1,9 @@
 """`SecEdgarConnector`: the `SourceConnector` implementation for SEC EDGAR.
 
-Fetches and wraps raw JSON with provenance — normalization into typed rows
-is `mapping.py`'s job, not this class's (see `data_engine.interfaces`).
+Fetches the exact SEC response bytes and wraps them with provenance and a
+SHA-256 digest. Nothing is parsed here: `ingest.py` archives the bytes
+first and only then decodes them, so even an unparseable response is kept
+as evidence. Normalization into typed rows is `mapping.py`'s job.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ from ibi.core.epistemics import Provenance, SourceTier
 from ibi.core.types import Unknown
 from ibi.data_engine.interfaces import RawRecord, SourceConnector
 from ibi.data_engine.sec_edgar.client import SecHttpClient
+from ibi.data_engine.sec_edgar.source_bytes import sha256_hex
 from ibi.logging import get_logger, log_context
 
 logger = get_logger(__name__)
@@ -46,7 +49,7 @@ class SecEdgarConnector(SourceConnector):
         ):
             url = url_template.format(cik=cik_param)
             retrieved_at = datetime.now(UTC)
-            result = self._client.get_json(url)
+            result = self._client.get_bytes(url)
             if isinstance(result, Unknown):
                 logger.info(
                     f"sec_edgar {label} unavailable for entity",
@@ -60,7 +63,10 @@ class SecEdgarConnector(SourceConnector):
             records.append(
                 RawRecord(
                     entity_id=entity_id,
-                    payload={"kind": label, "url": url, "body": result},
+                    payload={
+                        "kind": label, "url": url,
+                        "raw_bytes": result, "sha256": sha256_hex(result),
+                    },
                     provenance=Provenance(
                         source="SEC EDGAR",
                         source_tier=SourceTier.PRIMARY_REGULATORY,

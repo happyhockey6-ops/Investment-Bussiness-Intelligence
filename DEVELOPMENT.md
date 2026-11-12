@@ -86,7 +86,7 @@ Run only tests that don't require any external service:
 
 `.github/workflows/postgresql.yml` runs on pull requests and pushes to
 `main`, using PostgreSQL 16 and Python 3.13. It installs the existing
-`.[dev]` dependencies, runs Ruff, upgrades all migrations through Phase 2B,
+`.[dev]` dependencies, runs Ruff, upgrades all migrations,
 checks schema drift with `alembic check`, and verifies a full
 `downgrade base` / `upgrade head` round trip. These checks run **before**
 the result-store tests, which intentionally create and drop model tables.

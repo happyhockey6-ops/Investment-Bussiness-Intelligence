@@ -219,6 +219,41 @@ SEC EDGAR ingestion," for the full history. Summary:
   verbatim to `IBI_RAW_DATA_DIR` (default `data/raw/`, gitignored — runtime
   data, not source code) and referenced from `source_documents.content_ref`.
 
+### XBRL identifier storage
+
+`financial_data.metric_id` stores the complete `taxonomy:tag` as SQLAlchemy
+`Text` / PostgreSQL `TEXT`, starting with migration `b91c7e2a4d60` (after
+`e7f3a2c91b40`). Real SEC option-award tags in the storage regressions are
+86–91 characters including `us-gaap:`; `VARCHAR(64)` rejects them.
+`TEXT` avoids inventing another arbitrary character limit and preserves
+the existing identifier format, equality comparisons and both full-value
+partial unique indexes. PostgreSQL documents no performance advantage for
+length-constrained VARCHAR over TEXT:
+https://www.postgresql.org/docs/16/datatype-character.html.
+
+The forward migration changes only the column type, preserving values,
+row ids, nullability and index keys. Previously applied migrations are
+unchanged. SQLite uses Alembic batch mode to make the same declared-type
+change. Downgrade to `VARCHAR(64)` refuses if any existing value exceeds
+64 characters; it never casts/truncates long names. On PostgreSQL it locks
+the table before this check to prevent a concurrent oversized insert.
+Both type changes require a table lock; schedule application of the
+migration appropriately. The result tables' internal `ibi:*` metric ids
+are a different namespace and retain their existing definitions.
+
+`tests/integration/test_xbrl_identifier_storage.py` tests actual SEC tag
+names (source filing URLs are included), with synthetic values and contexts,
+against Alembic-created SQLite and isolated PostgreSQL schemas. It checks
+old-schema rejection on PostgreSQL, exact round trips, distinct names
+sharing the first 64 characters, both partial unique indexes, short/64-character
+identifiers, and safe/blocked downgrade paths. It makes no SEC requests.
+
+Remaining storage limit: PostgreSQL's existing composite B-tree indexes
+still impose an index-entry byte-size limit. TEXT removes the 64-character
+column restriction; it is not a promise that arbitrarily large identifiers
+can be indexed. No hashing, identifier normalization, taxonomy dictionary,
+ingestion changes or data backfill is introduced here.
+
 ## Phase 2B: calculation results
 
 **Where things live.** `financial_data` holds facts only. Each build is a

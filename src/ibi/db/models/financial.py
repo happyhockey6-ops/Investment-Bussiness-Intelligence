@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, ForeignKey, Index, Numeric, String, text
+from sqlalchemy import Date, DateTime, ForeignKey, Index, Numeric, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ibi.db.base import Base, TimestampMixin
@@ -58,7 +58,8 @@ class FinancialDataPointRecord(TimestampMixin, Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     entity_id: Mapped[str] = mapped_column(ForeignKey("entities.entity_id"))
-    metric_id: Mapped[str] = mapped_column(String(64))
+    # Preserve the complete taxonomy:tag; real SEC names exceed 64 characters.
+    metric_id: Mapped[str] = mapped_column(Text)
     unit: Mapped[str] = mapped_column(String(32))
     start_date: Mapped[date | None] = mapped_column(Date)
     period_end_date: Mapped[date] = mapped_column(Date)

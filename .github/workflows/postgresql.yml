@@ -1,0 +1,55 @@
+name: PostgreSQL CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  postgresql:
+    name: PostgreSQL 16 / Python 3.13
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ibi
+          POSTGRES_PASSWORD: ibi_ci_only
+          POSTGRES_DB: ibi_ci_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ibi -d ibi_ci_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      # Disposable service credentials only; no production secrets are used.
+      IBI_DATABASE_URL: postgresql+psycopg://ibi:ibi_ci_only@127.0.0.1:5432/ibi_ci_test
+      IBI_TEST_POSTGRES_URL: postgresql+psycopg://ibi:ibi_ci_only@127.0.0.1:5432/ibi_ci_test
+      IBI_AI_PROVIDER: none
+      IBI_MARKET_DATA_PROVIDER: "null"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - name: Install project and existing development dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Lint
+        run: python -m ruff check src tests alembic
+      - name: Apply migrations and check schema
+        run: |
+          python -m alembic upgrade head
+          python -m alembic check
+      - name: Verify migration round trip
+        run: |
+          python -m alembic downgrade base
+          python -m alembic upgrade head
+          python -m alembic check
+      - name: Run PostgreSQL, SQLite and unit tests (PostgreSQL skips forbidden)
+        run: python -m pytest --require-postgres -ra

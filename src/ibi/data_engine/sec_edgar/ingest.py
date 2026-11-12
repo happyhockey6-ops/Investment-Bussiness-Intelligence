@@ -3,7 +3,8 @@
 One entity's failure must not abort the batch (see ARCHITECTURE.md /
 DECISIONS.md "Error handling") — `run_ingestion` isolates each entity in
 its own try/except and its own DB transaction. Re-running against
-unchanged source data must write zero new rows (idempotency) — enforced
+unchanged source data writes no new facts or filings (snapshots are still
+archived per attempt). Fact idempotency is enforced
 here at the application level via a pre-insert existence check, backed at
 the database level by the two partial unique indexes on `financial_data`
 and the `UNIQUE` constraint on `filings.accession_number`.
@@ -13,14 +14,16 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal, DecimalException
 from pathlib import Path
+from typing import Literal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ibi.config import Settings, get_settings
-from ibi.core.errors import ProviderError
+from ibi.core.errors import ProviderError, ValidationError
 from ibi.data_engine.sec_edgar.client import SecHttpClient, SecHttpClientConfig
 from ibi.data_engine.sec_edgar.connector import SecEdgarConnector
 from ibi.data_engine.sec_edgar.fixed_universe import FIXED_UNIVERSE, FixedUniverseEntity
@@ -37,6 +40,50 @@ from ibi.logging import get_logger, log_context
 logger = get_logger(__name__)
 
 
+class MalformedSecPayloadError(ValidationError):
+    """A fetched SEC document cannot be safely normalized."""
+
+
+class RawSnapshotWriteError(ProviderError):
+    """A source snapshot could not be written; no DB references may commit."""
+
+
+@dataclass(frozen=True, slots=True)
+class FactConflict:
+    """Evidence captured before rollback.
+
+    Existing ids may describe rows staged earlier in this same transaction;
+    only already-committed rows keep their ids after rollback. The incoming
+    snapshot holds both entries for a conflict within one payload.
+    """
+    entity_id: str
+    metric_id: str
+    unit: str
+    start_date: date | None
+    period_end_date: date
+    accession_number: str
+    existing_fact_id: int
+    existing_value: Decimal | None
+    incoming_value: Decimal
+    existing_source_document_id: int | None
+    incoming_snapshot_ref: str
+    """The snapshot survives rollback; a new DB source-document id would not."""
+
+
+class DuplicateFactConflict(ValidationError):
+    """One fact identity reports two values; never pick or overwrite one."""
+
+    def __init__(self, conflict: FactConflict):
+        self.conflict = conflict
+        super().__init__(
+            f"{conflict.entity_id} {conflict.metric_id} {conflict.unit} "
+            f"{conflict.start_date}..{conflict.period_end_date} "
+            f"accession {conflict.accession_number}: fact {conflict.existing_fact_id} "
+            f"has {conflict.existing_value}, incoming value is {conflict.incoming_value}; "
+            f"snapshot: {conflict.incoming_snapshot_ref}"
+        )
+
+
 @dataclass(slots=True)
 class IngestResult:
     entity_id: str
@@ -46,6 +93,10 @@ class IngestResult:
     facts_written: int = 0
     facts_skipped_duplicate: int = 0
     error: str | None = None
+    status: Literal["success", "failed"] = "success"
+    error_type: str | None = None
+    raw_snapshot_refs: list[str] = field(default_factory=list)
+    conflict: FactConflict | None = None
 
 
 @dataclass(slots=True)
@@ -61,11 +112,70 @@ def _archive_raw_snapshot(
     data_dir: Path, entity_id: str, label: str, retrieved_at: datetime, body: dict
 ) -> str:
     entity_dir = data_dir / "sec_edgar" / entity_id
-    entity_dir.mkdir(parents=True, exist_ok=True)
     filename = f"{label}_{retrieved_at.strftime('%Y%m%dT%H%M%S%f')}Z.json"
     path = entity_dir / filename
-    path.write_text(json.dumps(body), encoding="utf-8")
+    try:
+        encoded = json.dumps(body)
+    except (TypeError, ValueError) as e:
+        raise MalformedSecPayloadError(
+            f"{entity_id} {label}: cannot serialize snapshot: {e}"
+        ) from e
+    try:
+        entity_dir.mkdir(parents=True, exist_ok=True)
+        path.write_text(encoded, encoding="utf-8")
+    except InterruptedError:
+        raise
+    except OSError as e:
+        raise RawSnapshotWriteError(f"Cannot write {label} snapshot {path}: {e}") from e
     return str(path)
+
+
+def _parse_rows(entity_id: str, label: str, body: dict, filing_lookup=None):
+    """Validate the containers the mapper consumes, then classify parsing errors.
+
+    Missing containers must not turn into an apparently successful empty ingest.
+    Archival has already happened, so malformed documents remain inspectable.
+    """
+    try:
+        if not isinstance(body, dict):
+            raise ValueError("document must be a JSON object")
+        if label == "submissions":
+            recent = body["filings"]["recent"]
+            if not isinstance(recent, dict) or not isinstance(recent["accessionNumber"], list):
+                raise ValueError("filings.recent.accessionNumber must be an array")
+            count = len(recent["accessionNumber"])
+            required = ("accessionNumber", "filingDate", "form")
+            optional = ("acceptanceDateTime", "reportDate", "primaryDocument", "items")
+            for key in (*required, *(k for k in optional if k in recent)):
+                if not isinstance(recent[key], list) or len(recent[key]) != count:
+                    raise ValueError(f"filings.recent.{key} must have {count} entries")
+            return parse_submissions(entity_id, body)
+        facts = body["facts"]
+        if not isinstance(facts, dict):
+            raise ValueError("facts must be an object")
+        for tags in facts.values():
+            for tag_data in tags.values():
+                units = tag_data["units"]
+                if not isinstance(units, dict) or any(
+                    not isinstance(entries, list) for entries in units.values()
+                ):
+                    raise ValueError("fact units must map units to arrays of entries")
+        rows = parse_companyfacts(entity_id, body, filing_lookup=filing_lookup)
+        if any(not row.value.is_finite() for row in rows):
+            raise ValueError("fact values must be finite numbers")
+        return rows
+    except FormTypeMismatchError:
+        raise
+    except (KeyError, TypeError, ValueError, IndexError, AttributeError, DecimalException) as e:
+        if isinstance(e, DecimalException):
+            detail = "invalid numeric fact value"
+        elif isinstance(e, KeyError):
+            detail = f"missing required field {e}"
+        else:
+            detail = str(e)
+        raise MalformedSecPayloadError(
+            f"{entity_id} {label}: malformed SEC payload: {detail}"
+        ) from e
 
 
 def _ensure_entity(session: Session, entity: FixedUniverseEntity) -> None:
@@ -80,21 +190,41 @@ def _ensure_entity(session: Session, entity: FixedUniverseEntity) -> None:
 
 
 def ingest_entity(
-    session: Session, connector: SecEdgarConnector, entity: FixedUniverseEntity, data_dir: Path
+    session: Session, connector: SecEdgarConnector, entity: FixedUniverseEntity, data_dir: Path,
+    *, snapshot_refs: list[str] | None = None,
 ) -> IngestResult:
-    result = IngestResult(entity_id=entity.entity_id)
+    """Stage one company in the caller's transaction; never commit here.
+
+    `run_ingestion` owns commit/rollback. Its snapshot list retains evidence
+    even if this function or the subsequent commit fails.
+    """
+    result = IngestResult(
+        entity_id=entity.entity_id,
+        raw_snapshot_refs=snapshot_refs if snapshot_refs is not None else [],
+    )
     acquire_entity_write_lock(session, entity.entity_id)
     _ensure_entity(session, entity)
 
-    raw_records = connector.fetch(entity.entity_id)
+    try:
+        raw_records = connector.fetch(entity.entity_id)
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise MalformedSecPayloadError(f"{entity.entity_id}: invalid SEC JSON: {e}") from e
+    if not raw_records:
+        raise ProviderError(f"No SEC snapshots available for {entity.entity_id}")
 
     bodies: dict[str, dict] = {}
     for raw in raw_records:
-        label = raw.payload["kind"]
-        body = raw.payload["body"]
+        try:
+            label = raw.payload["kind"]
+            body = raw.payload["body"]
+            if label not in ("submissions", "companyfacts") or label in bodies:
+                raise ValueError(f"unexpected or repeated snapshot kind: {label!r}")
+        except (KeyError, TypeError, ValueError) as e:
+            raise MalformedSecPayloadError(f"{entity.entity_id}: malformed SEC record: {e}") from e
         content_ref = _archive_raw_snapshot(
             data_dir, entity.entity_id, label, raw.provenance.retrieval_date, body
         )
+        result.raw_snapshot_refs.append(content_ref)
         doc = SourceDocumentRecord(
             source=raw.provenance.source,
             source_tier=raw.provenance.source_tier.value,
@@ -105,11 +235,11 @@ def ingest_entity(
         session.add(doc)
         session.flush()
         result.source_documents_written += 1
-        bodies[label] = {"body": body, "source_document_id": doc.id}
+        bodies[label] = {"body": body, "source_document_id": doc.id, "content_ref": content_ref}
 
     filing_lookup = {}
     if "submissions" in bodies:
-        filing_rows = parse_submissions(entity.entity_id, bodies["submissions"]["body"])
+        filing_rows = _parse_rows(entity.entity_id, "submissions", bodies["submissions"]["body"])
         filing_lookup = {f.accession_number: f for f in filing_rows}
         for frow in filing_rows:
             existing = session.execute(
@@ -137,8 +267,9 @@ def ingest_entity(
         session.flush()
 
     if "companyfacts" in bodies:
-        fact_rows = parse_companyfacts(
-            entity.entity_id, bodies["companyfacts"]["body"], filing_lookup=filing_lookup
+        fact_rows = _parse_rows(
+            entity.entity_id, "companyfacts", bodies["companyfacts"]["body"],
+            filing_lookup=filing_lookup,
         )
         for frow in fact_rows:
             duplicate = session.execute(
@@ -152,6 +283,17 @@ def ingest_entity(
                 )
             ).scalar_one_or_none()
             if duplicate is not None:
+                if duplicate.value is None or Decimal(duplicate.value) != frow.value:
+                    raise DuplicateFactConflict(FactConflict(
+                        entity_id=frow.entity_id, metric_id=frow.metric_id, unit=frow.unit,
+                        start_date=frow.start_date, period_end_date=frow.end_date,
+                        accession_number=frow.accession_number, existing_fact_id=duplicate.id,
+                        existing_value=(Decimal(duplicate.value) if duplicate.value is not None
+                                        else None),
+                        incoming_value=frow.value,
+                        existing_source_document_id=duplicate.source_document_id,
+                        incoming_snapshot_ref=bodies["companyfacts"]["content_ref"],
+                    ))
                 result.facts_skipped_duplicate += 1
                 continue
             session.add(
@@ -173,13 +315,16 @@ def ingest_entity(
             )
             result.facts_written += 1
 
+    session.flush()
     return result
 
 
 def run_ingestion(settings: Settings | None = None) -> IngestSummary:
     """Ingest the fixed universe. Each entity is isolated: one entity's
-    failure is logged and recorded on its `IngestResult.error`, never
-    raised out of this function, so the rest of the batch still runs."""
+    failure is logged and recorded after rollback, including commit failures.
+    Interruptions/cancellation propagate. Global configuration is checked
+    before starting the batch; company exceptions never become silent skips.
+    """
     settings = settings or get_settings()
     client = SecHttpClient(SecHttpClientConfig(user_agent=settings.require_sec_user_agent()))
     connector = SecEdgarConnector(client)
@@ -187,18 +332,31 @@ def run_ingestion(settings: Settings | None = None) -> IngestSummary:
 
     summary = IngestSummary()
     for entity in FIXED_UNIVERSE:
+        snapshot_refs: list[str] = []
         try:
             with session_scope(settings) as session:
-                result = ingest_entity(session, connector, entity, data_dir)
-        except (ProviderError, FormTypeMismatchError) as e:
+                result = ingest_entity(
+                    session, connector, entity, data_dir, snapshot_refs=snapshot_refs
+                )
+        except (MemoryError, InterruptedError):
+            raise
+        except Exception as e:
+            # This is the batch boundary, outside session_scope: failed writes
+            # have rolled back before recording an outcome or starting a new session.
+            message = str(e) or type(e).__name__
             logger.warning(
-                f"sec_edgar ingestion failed for entity: {e}",
+                "sec_edgar ingestion failed (%s): %s", type(e).__name__, message,
                 extra=log_context(
                     operation="data_engine.sec_edgar.ingest",
                     provider="sec_edgar",
                     entity_id=entity.entity_id,
                 ),
+                exc_info=True,
             )
-            result = IngestResult(entity_id=entity.entity_id, error=str(e))
+            result = IngestResult(
+                entity_id=entity.entity_id, status="failed", error_type=type(e).__name__,
+                error=message, raw_snapshot_refs=snapshot_refs,
+                conflict=e.conflict if isinstance(e, DuplicateFactConflict) else None,
+            )
         summary.results.append(result)
     return summary

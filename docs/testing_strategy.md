@@ -85,6 +85,18 @@ for the equivalent local commands and disposable-database requirements.
   excluded by default via `addopts` in pyproject.toml) — one real company
   (Apple), run manually against the real SEC API.
 
+## Ingestion integrity and company isolation
+
+`test_sec_edgar_integrity.py` runs against migrated SQLite databases and
+temporary PostgreSQL schemas inside the dedicated test database. It drives
+the real batch/session boundaries with three synthetic companies and checks
+that a middle failure rolls back entity, filing, fact and source-document
+rows while the first and third commit. Real DB constraints inject write and
+deferred-COMMIT failures; payload and archive errors also produce explicit
+failed outcomes. Tests cover identical and conflicting duplicates (including
+within one payload), amendments, retained conflict snapshots, and propagation
+of process/IO interruptions and cancellation. No SEC requests are made.
+
 ## What's deliberately not covered
 
 Every domain package beyond `financial_engine`'s implemented slice is an

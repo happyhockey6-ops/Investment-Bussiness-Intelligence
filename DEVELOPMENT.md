@@ -159,6 +159,32 @@ points at. Safe to re-run: idempotent (see DECISIONS.md). Requires a real
 `IBI_SEC_USER_AGENT` (SEC's fair-access policy; not a secret, but must be a
 genuine contact — see SECURITY.md).
 
+`run_ingestion()` returns one `IngestResult` per company, in universe order:
+`status` is `success` or `failed`; failures include `error_type` and `error`.
+Each company uses a separate session/transaction. An outcome becomes successful
+only after commit; a company exception (including a database/commit error)
+rolls back its entity, filing, fact and source-document writes before the batch
+continues. Failed outcomes report zero committed-write counters. Global
+configuration failures occur before the batch; cancellation, process interrupts,
+`InterruptedError` and `MemoryError` propagate rather than becoming outcomes.
+
+An existing fact identity with the same exact Decimal value is skipped. A
+different value raises `DuplicateFactConflict`, fails that company, and leaves
+the original fact intact. Different accession numbers, including amendments,
+remain distinct facts. A failed result's `conflict` carries the identity,
+values, existing ids and incoming snapshot reference. Existing ids are durable
+only if the original row was already committed, not if it was staged in the
+same failed attempt.
+
+`raw_snapshot_refs` lists successfully written files even after a DB rollback;
+retain these with the returned summary for investigation. File writes are not
+transactional with PostgreSQL: completed snapshots deliberately remain as
+evidence, and an interrupted/failed write may leave a partial file at the path
+named in the error. No committed DB reference is left for a failed attempt.
+This does not change the existing JSON archival format or add durable run-history
+storage. Direct `ingest_entity()` callers still own their transaction and must
+roll back on error.
+
 To run the opt-in live-network test suite for this connector (skipped by
 default; makes real calls to `data.sec.gov`):
 

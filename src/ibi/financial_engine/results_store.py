@@ -471,6 +471,12 @@ def active_versions(
     return VersionPair(record.calculation_version, record.selection_policy_version)
 
 
+def quarantined_fact_ids():
+    """Subquery of every quarantined `financial_data.id`, for read models that
+    must exclude bad facts without touching the result tables themselves."""
+    return select(FactQuarantineRecord.fact_id)
+
+
 def quarantine_fact(session: Session, fact_id: int, reason: str) -> int:
     if not reason.strip():
         raise ValueError("a quarantine reason is required")
@@ -767,6 +773,7 @@ __all__ = [
     "active_versions",
     "build_generation",
     "quarantine_fact",
+    "quarantined_fact_ids",
     "read_at_system_time",
     "read_current",
     "read_pinned",

@@ -8,19 +8,24 @@ analysis, contrarian analysis, and learning from prediction errors.
 autonomous trading, and no automatic execution anywhere in this project's
 scope. See [DECISIONS.md](DECISIONS.md) for why.
 
-## Status: Phase 1 (SEC EDGAR ingestion)
+## Status
 
-Phase 0 established the foundation: domain boundaries, provider
-abstractions, the evidence/epistemic model, a database schema and
-migration system, and a tested slice of deterministic financial
-computation. Phase 1 added the first real, tested ingestion source —
-`ibi.data_engine.sec_edgar` — pulling structured XBRL facts and filing
-metadata for a small, fixed set of companies (Apple, Microsoft) from SEC's
-public JSON APIs, with a reviewed identity model, point-in-time
-availability rule, and full provenance chain. No financial calculation
-runs on this data yet, no market data, no AI research. Most domain engines
-remain interfaces with no behavior — see [ARCHITECTURE.md](ARCHITECTURE.md)
-for what exists and what is deliberately deferred.
+Trusty is a private investment research application under construction.
+What works today:
+
+- **SEC EDGAR ingestion** for a small, fixed set of companies (Apple,
+  Microsoft): filings and XBRL facts with point-in-time availability,
+  per-company failure isolation and conflict detection.
+- **Deterministic metrics** (`ibi:gross_margin`, `ibi:free_cash_flow`) with
+  full point-in-time history.
+- **First research page**: `python -m ibi.api` serves a mobile-friendly
+  annual fundamentals page per ticker, every figure linked to the SEC
+  filing it came from (local only, no authentication yet).
+- **PostgreSQL CI** on every pull request.
+
+Not built yet: market prices and valuation, the opportunity scanner,
+macro and news intelligence, AI research, portfolio tracking, hosting and
+access control. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Core principle
 

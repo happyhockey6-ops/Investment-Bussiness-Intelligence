@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from ibi.config import Settings, get_settings
+from ibi.config import SEC_CONTACT_PLACEHOLDER, Settings, get_settings
 
 
 def test_defaults_are_deterministic_only(monkeypatch: pytest.MonkeyPatch):
@@ -40,3 +40,20 @@ def test_negative_budget_is_rejected():
 
 def test_get_settings_is_cached():
     assert get_settings() is get_settings()
+
+
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["", "   ", f"Trusty Investment Research {SEC_CONTACT_PLACEHOLDER}", "Trusty Research",
+     "ops@example.org", "Trusty notanemail"],
+)
+def test_sec_user_agent_requires_organization_and_real_contact(value):
+    with pytest.raises(RuntimeError, match="IBI_SEC_USER_AGENT"):
+        Settings(sec_user_agent=value, _env_file=None).require_sec_user_agent()
+
+
+def test_sec_user_agent_accepts_organization_and_email():
+    ua = "Trusty Investment Research ops@trusty.example.org"
+    assert Settings(sec_user_agent=f" {ua} ", _env_file=None).require_sec_user_agent() == ua

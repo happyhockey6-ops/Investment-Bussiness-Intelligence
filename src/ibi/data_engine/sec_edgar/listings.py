@@ -8,6 +8,7 @@ Listing snapshots identify securities; they do not ingest company facts.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -214,26 +215,34 @@ def _ticker_key(query: str) -> str:
     return query.strip().upper().replace(".", "-")
 
 
-def resolve_ticker(session: Session, query: str) -> Listing | Unknown | ConflictingEvidence:
-    """Read the newest snapshot, preferring exact ticker, then name matches.
+def resolve_ticker(session: Session, query: str | int) -> Listing | Unknown | ConflictingEvidence:
+    """Resolve only an exact ticker or CIK in the newest snapshot.
 
-    Multiple CIKs are evidence of ambiguity, not permission to choose one.
-    Multiple share classes of the same CIK still identify one company.
+    Tickers ignore case and treat dots/hyphens as equivalent. CIKs accept
+    integers or one to ten ASCII digits, optionally prefixed with CIK.
+    Names and partial matches belong exclusively to search_listings;
+    no exact match returns Unknown. Multiple CIKs for one exact ticker
+    return ConflictingEvidence, never an arbitrary company.
     """
+    if type(query) is int:
+        query = str(query)
+    elif not isinstance(query, str):
+        return Unknown("Listing query must be a ticker string or an integer CIK")
     query = query.strip()
     if not query:
         return Unknown("Empty listing query")
-    ticker_match = func.replace(SecurityListingRecord.ticker, ".", "-") == _ticker_key(query)
-    name_match = func.lower(SecurityListingRecord.name).contains(query.lower(), autoescape=True)
+    cik = re.fullmatch(r"(?:CIK)?([0-9]{1,10})", query, re.IGNORECASE)
+    match = (
+        SecurityListingRecord.cik == int(cik.group(1))
+        if cik
+        else func.replace(SecurityListingRecord.ticker, ".", "-") == _ticker_key(query)
+    )
     with session.no_autoflush:
-        rows = session.scalars(
+        candidates = session.scalars(
             _current_rows()
-            .where(or_(ticker_match, name_match))
+            .where(match)
             .order_by(SecurityListingRecord.ticker, SecurityListingRecord.cik)
         ).all()
-    exact_tickers = [row for row in rows if _ticker_key(row.ticker) == _ticker_key(query)]
-    exact_names = [row for row in rows if row.name.lower() == query.lower()]
-    candidates = exact_tickers or exact_names or rows
     if not candidates:
         return Unknown(f"No listing matches {query!r} in the newest SEC snapshot")
     if len({row.cik for row in candidates}) > 1:

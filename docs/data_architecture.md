@@ -405,11 +405,15 @@ creates three snapshots, preserving the intervening state.
 `resolve_ticker` and `search_listings` read only the most recently committed
 snapshot (retrieval time, then source-document ID for ties). A delayed older
 fetch cannot replace a newer observation. An empty new directory yields
-unknown results rather than resurrecting
-old tickers. Matching ignores ticker case and treats `.` and `-` equally;
-name search is case-insensitive and treats `%`/`_` as literal characters.
-More than one candidate CIK returns `ConflictingEvidence`, with the candidate
-listings and their source-document IDs. No candidate produces `Unknown`.
+unknown results rather than resurrecting old tickers. `resolve_ticker`
+accepts only an exact ticker (ignoring case and treating `.` and `-` equally)
+or an exact CIK, as an integer or one to ten ASCII digits, optionally prefixed
+with `CIK` (for example `320193` or `CIK0000320193`). No exact match returns
+`Unknown`; names and partial strings never resolve, even if only one company
+matches. Multiple CIKs for an exact ticker return `ConflictingEvidence`, with
+the candidate listings and their source-document IDs. Name and substring
+matching belong exclusively to `search_listings`, which is case-insensitive
+and treats `%`/`_` as literal characters.
 Raw ticker spelling remains available alongside the uppercase ticker.
 
 Migration `d6f8a1b2c390` adds only this table and its ticker index. Uniqueness

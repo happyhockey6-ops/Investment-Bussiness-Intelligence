@@ -185,13 +185,24 @@ def test_resolution_and_search_are_case_insensitive_literal_and_read_only(databa
         assert isinstance(listings.resolve_ticker(session, "AAPL"), Unknown)
     refresh(database)
     with Session(engine) as session:
-        for query in ("AAPL", "aapl", " Aapl ", "Apple Inc.", "apple"):
+        for query in (
+            "AAPL",
+            "aapl",
+            " Aapl ",
+            "320193",
+            "0000320193",
+            "CIK0000320193",
+            "cik320193",
+            320193,
+        ):
             result = listings.resolve_ticker(session, query)
             assert result.cik == 320193 and result.source_document_id
         assert listings.resolve_ticker(session, "brk.b").cik == 1067983
         assert listings.resolve_ticker(session, "BRK-B").cik == 1067983
         assert listings.search_listings(session, "berkshire")[0].ticker == "BRK-B"
         assert listings.search_listings(session, "brk.b")[0].ticker == "BRK-B"
+        assert listings.search_listings(session, "micro")[0].ticker == "MSFT"
+        assert listings.search_listings(session, "Apple Inc.")[0].ticker == "AAPL"
         assert listings.search_listings(session, "%") == []
         assert listings.search_listings(session, "_") == []
         assert listings.search_listings(session, "") == []
@@ -202,8 +213,57 @@ def test_resolution_and_search_are_case_insensitive_literal_and_read_only(databa
         pending = SourceDocumentRecord(source="pending")
         session.add(pending)
         listings.resolve_ticker(session, "aapl")
+        listings.resolve_ticker(session, "CIK0000320193")
         listings.search_listings(session, "apple")
         assert pending.id is None
+
+
+@pytest.mark.parametrize("query", ["MICRO", "AMAZ", "nvidia", "Apple Inc.", "apple"])
+def test_names_and_partial_strings_never_resolve_to_a_company(database, query):
+    engine, _, _ = database
+    refresh(database)
+    with Session(engine) as session:
+        assert isinstance(listings.resolve_ticker(session, query), Unknown)
+        assert listings.search_listings(session, query)
+
+
+def test_exact_cik_is_not_a_partial_match_or_an_old_snapshot_fallback(database):
+    engine, _, _ = database
+    refresh(database)
+    with Session(engine) as session:
+        for query in ("32019", "CIK32019", "CIK00003201930", "CIK", "320193.0", "-320193"):
+            assert isinstance(listings.resolve_ticker(session, query), Unknown)
+    refresh(database, payload([[1, "New company", "NEW", None]]), step=1)
+    with Session(engine) as session:
+        for query in ("320193", "CIK0000320193"):
+            assert isinstance(listings.resolve_ticker(session, query), Unknown)
+
+
+def test_exact_cik_resolves_one_company_despite_multiple_share_classes(database):
+    engine, _, _ = database
+    refresh(
+        database,
+        payload(
+            [
+                [1, "One company", "ONE-A", None],
+                [1, "One company", "ONE-B", None],
+                [2, "Other company", "OTHER", None],
+            ]
+        ),
+    )
+    with Session(engine) as session:
+        for query in (1, "1", "CIK0000000001"):
+            assert listings.resolve_ticker(session, query).cik == 1
+
+
+def test_non_identifier_types_are_not_coerced_into_real_ticker_strings(database):
+    engine, _, _ = database
+    refresh(database, payload([[1, "One", "TRUE", None], [2, "Two", "NONE", None]]))
+    with Session(engine) as session:
+        for query in (True, None, 1.0):
+            assert isinstance(listings.resolve_ticker(session, query), Unknown)
+        assert listings.resolve_ticker(session, "TRUE").cik == 1
+        assert listings.resolve_ticker(session, "NONE").cik == 2
 
 
 def test_punctuation_aliases_with_two_ciks_are_conflicting(database):
@@ -275,15 +335,17 @@ def test_repeated_same_ticker_cik_is_archived_and_rejected_atomically(database):
     assert not all_rows(engine, SourceDocumentRecord)
 
 
-def test_name_ambiguity_is_not_arbitrarily_resolved(database):
+def test_names_are_searchable_but_never_resolved_even_when_exact_or_unambiguous(database):
     engine, _, _ = database
     refresh(
         database,
         payload([[1, "Similar Company One", "A", None], [2, "Similar Company Two", "B", None]]),
     )
     with Session(engine) as session:
-        assert isinstance(listings.resolve_ticker(session, "similar company"), ConflictingEvidence)
-        assert listings.resolve_ticker(session, "similar company one").cik == 1
+        assert isinstance(listings.resolve_ticker(session, "similar company"), Unknown)
+        assert isinstance(listings.resolve_ticker(session, "similar company one"), Unknown)
+        assert {r.cik for r in listings.search_listings(session, "similar company")} == {1, 2}
+        assert listings.search_listings(session, "similar company one")[0].cik == 1
 
 
 @pytest.mark.integration

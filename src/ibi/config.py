@@ -12,6 +12,7 @@ secret fails fast at startup instead of silently degrading.
 
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from typing import Literal
 
@@ -19,6 +20,10 @@ from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["development", "test", "production"]
+
+SEC_CONTACT_PLACEHOLDER = "<CONTACT_EMAIL>"
+"""Left in .env.example on purpose: ingestion refuses to run until it is replaced."""
+_SEC_CONTACT = re.compile(r"\S+\s+\S+@[^\s@]+\.[^\s@]+")
 AIProviderName = Literal["claude", "local", "none"]
 MarketDataProviderName = Literal["null", "other"]
 
@@ -70,6 +75,8 @@ class Settings(BaseSettings):
         ),
     )
 
+    api_port: int = Field(default=8000, description="Local port for `python -m ibi.api`.")
+
     sec_user_agent: str | None = Field(
         default=None,
         description=(
@@ -82,13 +89,20 @@ class Settings(BaseSettings):
     def require_sec_user_agent(self) -> str:
         """Fail loudly, at the call site that needs it, if unset — never
         send SEC a generic/browser-mimicking User-Agent (see SECURITY.md)."""
-        if not self.sec_user_agent:
+        value = (self.sec_user_agent or "").strip()
+        if not value:
             raise RuntimeError(
                 "IBI_SEC_USER_AGENT is not set. SEC requires a descriptive "
                 "User-Agent ('Organization Name contact@domain.com') on every "
                 "EDGAR API request; see .env.example."
             )
-        return self.sec_user_agent
+        if SEC_CONTACT_PLACEHOLDER in value or not _SEC_CONTACT.search(value):
+            raise RuntimeError(
+                "IBI_SEC_USER_AGENT must name the organization and include a real, "
+                f"monitored contact email (replace {SEC_CONTACT_PLACEHOLDER}); "
+                "see .env.example."
+            )
+        return value
 
     @field_validator("ai_monthly_budget_usd")
     @classmethod

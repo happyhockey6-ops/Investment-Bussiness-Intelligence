@@ -146,6 +146,20 @@ SQLite/unit development loop, leave `IBI_TEST_POSTGRES_URL` unset and run
 `python -m pytest`; strict mode is opt-in outside CI. Test database names
 must contain `test` as a mistake guard, not as proof a database is disposable.
 
+## Research web app (local)
+
+```bash
+python -m ibi.api            # http://127.0.0.1:8000  (IBI_API_PORT to change)
+```
+
+Search a covered ticker (AAPL, MSFT) and open its fundamentals page; the
+JSON behind it is at `/api/companies/<ticker>/fundamentals` and the API
+docs at `/api/docs`. The app is read-only and has **no authentication**:
+it binds to 127.0.0.1 only. Do not expose it on a network until access
+control is in place. It shows whatever `IBI_DATABASE_URL` contains, so run
+SEC ingestion first. See docs/sec_validation.md for checking it against
+real filings.
+
 ## Running SEC EDGAR ingestion (Phase 1)
 
 ```powershell

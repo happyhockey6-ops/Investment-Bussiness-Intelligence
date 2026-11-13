@@ -1,0 +1,37 @@
+{
+  "_note": "Reference values for the SEC reconciliation. Units are USD unless stated; EPS is USD per share. verified=false means the values were transcribed for this check and must be confirmed against the filing on the first run; a mismatch is a finding to investigate, not proof Trusty is wrong.",
+  "companies": {
+    "AAPL": {
+      "filing": "Apple Inc. Form 10-K for the fiscal year ended 2024-09-28",
+      "verified": false,
+      "fiscal_year_end": "2024-09-28",
+      "values": {
+        "revenue": "391035000000",
+        "cost_of_revenue": "210352000000",
+        "operating_income": "123216000000",
+        "net_income": "93736000000",
+        "eps_diluted": "6.08",
+        "operating_cash_flow": "118254000000",
+        "capital_expenditures": "9447000000",
+        "cash": "29943000000",
+        "total_assets": "364980000000"
+      }
+    },
+    "MSFT": {
+      "filing": "Microsoft Corporation Form 10-K for the fiscal year ended 2024-06-30",
+      "verified": false,
+      "fiscal_year_end": "2024-06-30",
+      "values": {
+        "revenue": "245122000000",
+        "cost_of_revenue": "74114000000",
+        "operating_income": "109433000000",
+        "net_income": "88136000000",
+        "eps_diluted": "11.80",
+        "operating_cash_flow": "118548000000",
+        "capital_expenditures": "44477000000",
+        "cash": "18315000000",
+        "total_assets": "512163000000"
+      }
+    }
+  }
+}

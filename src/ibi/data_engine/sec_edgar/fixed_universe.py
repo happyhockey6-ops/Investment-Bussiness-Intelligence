@@ -19,13 +19,17 @@ class FixedUniverseEntity:
     cik: int
     entity_id: str
     canonical_name: str
+    ticker: str | None = None
+    """Primary trading symbol, as listed in the company's SEC submissions."""
 
 
 FIXED_UNIVERSE: tuple[FixedUniverseEntity, ...] = (
     FixedUniverseEntity(
-        cik=320193, entity_id=cik_to_entity_id(320193), canonical_name="Apple Inc."
+        cik=320193, entity_id=cik_to_entity_id(320193), canonical_name="Apple Inc.",
+        ticker="AAPL",
     ),
     FixedUniverseEntity(
-        cik=789019, entity_id=cik_to_entity_id(789019), canonical_name="Microsoft Corporation"
+        cik=789019, entity_id=cik_to_entity_id(789019),
+        canonical_name="Microsoft Corporation", ticker="MSFT",
     ),
 )

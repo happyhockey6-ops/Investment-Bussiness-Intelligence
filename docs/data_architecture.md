@@ -376,6 +376,66 @@ that mixes pairs.
 - *Bad facts:* excluded by an append-only `fact_quarantine` row. A fact is
   never edited or deleted.
 
+## Security listings
+
+`python -m ibi.data_engine.sec_edgar.listings refresh` fetches the SEC-wide
+`https://www.sec.gov/files/company_tickers_exchange.json` through
+`SecHttpClient.get_bytes`, using `Settings.require_sec_user_agent`. Run
+`alembic upgrade head` on the intended database first; the CLI does not
+automatically migrate it or ingest any company's financial facts.
+
+Each changed snapshot is archived byte-for-byte under
+`IBI_RAW_DATA_DIR/sec_edgar/_reference/` using the same exclusive, read-only,
+digest-verified archive as company ingestion. A `source_documents` row records
+the URL, retrieval time, SHA-256 and byte length. Strict `decode_sec_json`
+parsing follows archival, so malformed documents remain on disk as evidence
+but never publish a partial directory. Import errors roll back the entire
+new database snapshot; the caller owns its transaction. PostgreSQL refreshes
+use the existing transaction-scoped advisory lock for a reserved reference
+key, keeping concurrent refreshes serialized.
+
+`security_listings` is append-only application data, with one row per
+security per imported snapshot. `entity_id` is the deterministic
+`CIK%010d`; there is deliberately no foreign key to `entities`. The directory
+covers companies whose facts have never been ingested. Earlier listing and
+source rows are neither updated nor deleted by refresh. Identical bytes write
+no new database rows, after verifying the existing archive again. A -> B -> A
+creates three snapshots, preserving the intervening state.
+
+`resolve_ticker` and `search_listings` read only the most recently committed
+snapshot (retrieval time, then source-document ID for ties). A delayed older
+fetch cannot replace a newer observation. An empty new directory yields
+unknown results rather than resurrecting old tickers. `resolve_ticker`
+accepts only an exact ticker (ignoring case and treating `.` and `-` equally)
+or an exact CIK, as an integer or one to ten ASCII digits, optionally prefixed
+with `CIK` (for example `320193` or `CIK0000320193`). No exact match returns
+`Unknown`; names and partial strings never resolve, even if only one company
+matches. Multiple CIKs for an exact ticker return `ConflictingEvidence`, with
+the candidate listings and their source-document IDs. Name and substring
+matching belong exclusively to `search_listings`, which is case-insensitive
+and treats `%`/`_` as literal characters.
+Raw ticker spelling remains available alongside the uppercase ticker.
+
+Migration `d6f8a1b2c390` adds only this table and its ticker index. Uniqueness
+is `(source_document_id, ticker, cik)`: distinct CIKs for the same ticker
+remain available as conflicting evidence. A repeated ticker/CIK identity
+within one document is a typed malformed-payload error, rather than an
+arbitrary choice of names or exchange metadata. `cik` uses BIGINT for the
+full ten-digit integer range. Downgrade drops only `security_listings` and
+its index; source-document rows and archived bytes remain intact.
+
+Tests run on both SQLite and PostgreSQL 16 without network requests. The
+existing precision-migration regression now checks SQLite's actual behavior
+instead of skipping: its REAL-backed values survive a declared scale change,
+because SQLite does not enforce NUMERIC scale. PostgreSQL's corresponding
+test still requires refusal of a precision-losing downgrade; SQLite is not
+evidence that PostgreSQL's protection can be relaxed.
+
+This directory records what each captured SEC file contained; a missing
+ticker does not establish a legal delisting date, and no earlier unobserved
+history is reconstructed. ETFs/funds from `company_tickers_mf.json`, web/UI
+integration and changes to the financial engine are outside this slice.
+
 ## What's not yet built
 
 Every other domain package's `SourceConnector`-equivalent remains

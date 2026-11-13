@@ -92,21 +92,37 @@ def test_upgrade_preserves_rows_and_legacy_sources_stay_unhashed(migrated):
 @pytest.mark.parametrize("blocker", ["digest", "precision"])
 def test_downgrade_refuses_to_destroy_evidence(migrated, blocker):
     engine, config = migrated
-    if blocker == "precision" and engine.dialect.name != "postgresql":
-        pytest.skip("SQLite never enforced NUMERIC scale; nothing to protect")
-    command.upgrade(config, "head")
+    # Test c4's protection at c4, independently of later migrations.
+    command.upgrade(config, REVISION)
     if blocker == "digest":
         with engine.begin() as connection:
-            connection.execute(text(
-                "UPDATE source_documents SET content_sha256 = :h, content_length = 3"
-            ), {"h": "a" * 64})
+            connection.execute(
+                text("UPDATE source_documents SET content_sha256 = :h, content_length = 3"),
+                {"h": "a" * 64},
+            )
     else:
         insert_fact(engine, Decimal("0.12345678"), "c")
     before = rows(engine, "SELECT id, value FROM financial_data ORDER BY id")
+    if blocker == "precision" and engine.dialect.name == "sqlite":
+        # SQLite really stores REAL and ignores declared NUMERIC scale.
+        # Verify this behavior explicitly instead of skipping the backend.
+        assert rows(engine, "SELECT typeof(value) FROM financial_data") == [("real",)]
+        command.downgrade(config, PREVIOUS)
+        value_column = next(
+            c for c in inspect(engine).get_columns("financial_data") if c["name"] == "value"
+        )
+        assert value_column["type"].scale == 6
+        assert rows(engine, "SELECT id, value FROM financial_data ORDER BY id") == before
+        assert before[0][1] == 0.12345678
+        command.upgrade(config, "head")
+        assert rows(engine, "SELECT id, value FROM financial_data ORDER BY id") == before
+        command.check(config)
+        return
     with pytest.raises(RuntimeError, match="refusing to destroy evidence"):
         command.downgrade(config, PREVIOUS)
     assert rows(engine, "SELECT version_num FROM alembic_version") == [(REVISION,)]
     assert rows(engine, "SELECT id, value FROM financial_data ORDER BY id") == before
+    command.upgrade(config, "head")
     command.check(config)
 
 

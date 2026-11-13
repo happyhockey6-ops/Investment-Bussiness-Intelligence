@@ -20,6 +20,7 @@ from ibi.db.models.observation import ObservationRecord
 from ibi.db.models.prediction import OutcomeRecord, PredictionRecord
 from ibi.db.models.provider import ProviderCallRecord
 from ibi.db.models.research import ResearchRecord
+from ibi.db.models.security_listing import SecurityListingRecord
 from ibi.db.models.source import SourceDocumentRecord
 from ibi.db.models.thesis import ScenarioRecord, ThesisRecord
 
@@ -43,6 +44,7 @@ __all__ = [
     "PredictionRecord",
     "ProviderCallRecord",
     "ResearchRecord",
+    "SecurityListingRecord",
     "SourceDocumentRecord",
     "ScenarioRecord",
     "ThesisRecord",

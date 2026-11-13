@@ -1,0 +1,130 @@
+{
+  "fields": [
+    "cik",
+    "name",
+    "ticker",
+    "exchange"
+  ],
+  "data": [
+    [
+      320193,
+      "Apple Inc.",
+      "AAPL",
+      "Nasdaq"
+    ],
+    [
+      789019,
+      "MICROSOFT CORP",
+      "MSFT",
+      "Nasdaq"
+    ],
+    [
+      1045810,
+      "NVIDIA CORP",
+      "NVDA",
+      "Nasdaq"
+    ],
+    [
+      1018724,
+      "AMAZON COM INC",
+      "AMZN",
+      "Nasdaq"
+    ],
+    [
+      1652044,
+      "Alphabet Inc.",
+      "GOOGL",
+      "Nasdaq"
+    ],
+    [
+      1326801,
+      "Meta Platforms, Inc.",
+      "META",
+      "Nasdaq"
+    ],
+    [
+      1067983,
+      "BERKSHIRE HATHAWAY INC",
+      "BRK-B",
+      "NYSE"
+    ],
+    [
+      1046179,
+      "TAIWAN SEMICONDUCTOR MANUFACTURING CO LTD",
+      "TSM",
+      "NYSE"
+    ],
+    [
+      59478,
+      "ELI LILLY & Co",
+      "LLY",
+      "NYSE"
+    ],
+    [
+      1730168,
+      "Broadcom Inc.",
+      "AVGO",
+      "Nasdaq"
+    ],
+    [
+      1318605,
+      "Tesla, Inc.",
+      "TSLA",
+      "Nasdaq"
+    ],
+    [
+      104169,
+      "Walmart Inc.",
+      "WMT",
+      "NYSE"
+    ],
+    [
+      19617,
+      "JPMORGAN CHASE & CO",
+      "JPM",
+      "NYSE"
+    ],
+    [
+      1403161,
+      "VISA INC.",
+      "V",
+      "NYSE"
+    ],
+    [
+      353278,
+      "NOVO NORDISK A S",
+      "NVO",
+      "NYSE"
+    ],
+    [
+      731766,
+      "UNITEDHEALTH GROUP INC",
+      "UNH",
+      "NYSE"
+    ],
+    [
+      34088,
+      "EXXON MOBIL CORP",
+      "XOM",
+      "NYSE"
+    ],
+    [
+      1141391,
+      "Mastercard Inc",
+      "MA",
+      "NYSE"
+    ],
+    [
+      1341439,
+      "ORACLE CORP",
+      "ORCL",
+      "NYSE"
+    ],
+    [
+      1362988,
+      "Aircastle LTD",
+      "AYR",
+      null
+    ]
+  ]
+}

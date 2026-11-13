@@ -16,6 +16,7 @@ from ibi.core.types import Unknown
 from ibi.data_engine.sec_edgar.client import SecHttpClient, SecHttpClientConfig
 from ibi.data_engine.sec_edgar.connector import SecEdgarConnector
 from ibi.data_engine.sec_edgar.mapping import parse_companyfacts, parse_submissions
+from ibi.data_engine.sec_edgar.source_bytes import decode_sec_json
 
 pytestmark = pytest.mark.live_network
 
@@ -31,7 +32,7 @@ def test_fetch_and_parse_real_apple_filings():
     kinds = {r.payload["kind"] for r in records}
     assert kinds == {"submissions", "companyfacts"}
 
-    bodies = {r.payload["kind"]: r.payload["body"] for r in records}
+    bodies = {r.payload["kind"]: decode_sec_json(r.payload["raw_bytes"]) for r in records}
     submissions_body = bodies["submissions"]
     companyfacts_body = bodies["companyfacts"]
 

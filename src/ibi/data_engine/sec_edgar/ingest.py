@@ -143,11 +143,12 @@ def _write_new_file(path: Path, data: bytes) -> None:
 
 
 def _archive_raw_snapshot(
-    data_dir: Path, entity_id: str, label: str, retrieved_at: datetime, raw: bytes,
+    data_dir: Path, directory: str, label: str, retrieved_at: datetime, raw: bytes,
     expected_sha256: str | None = None,
 ) -> ArchivedSnapshot:
     """Archive the exact response bytes and prove they were stored intact.
 
+    `directory` is a company identifier or `_reference` for SEC-wide data.
     The digest is computed from the bytes we received, compared with the
     connector's digest when it supplied one, and checked again by reading
     the file back. The file name carries a digest prefix, so two different
@@ -156,10 +157,10 @@ def _archive_raw_snapshot(
     digest = sha256_hex(raw)
     if expected_sha256 is not None and expected_sha256 != digest:
         raise MalformedSecPayloadError(
-            f"{entity_id} {label}: connector digest {expected_sha256} does not match "
+            f"{directory} {label}: connector digest {expected_sha256} does not match "
             f"the received bytes ({digest})"
         )
-    entity_dir = data_dir / "sec_edgar" / entity_id
+    entity_dir = data_dir / "sec_edgar" / directory
     filename = f"{label}_{retrieved_at.strftime('%Y%m%dT%H%M%S%f')}Z_{digest[:16]}.json"
     path = entity_dir / filename
     try:

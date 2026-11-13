@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, String, Text
+from sqlalchemy import BigInteger, Date, DateTime, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ibi.db.base import Base, TimestampMixin
@@ -25,3 +25,9 @@ class SourceDocumentRecord(TimestampMixin, Base):
     publication_date: Mapped[date | None] = mapped_column(Date)
     retrieval_date: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     notes: Mapped[str | None] = mapped_column(Text)
+    content_sha256: Mapped[str | None] = mapped_column(String(64))
+    """Lowercase hex SHA-256 of the exact archived bytes at `content_ref`.
+    NULL only for rows archived before migration c4d2e8f1a7b3, whose files
+    were re-serialized JSON rather than the original response."""
+    content_length: Mapped[int | None] = mapped_column(BigInteger)
+    """Byte length of the archived content; NULL exactly when the hash is."""

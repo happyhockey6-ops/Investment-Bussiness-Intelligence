@@ -4,7 +4,9 @@ One entity's failure must not abort the batch (see ARCHITECTURE.md /
 DECISIONS.md "Error handling") — `run_ingestion` isolates each entity in
 its own try/except and its own DB transaction. Re-running against
 unchanged source data writes no new facts or filings (snapshots are still
-archived per attempt). Fact idempotency is enforced
+archived per attempt). Snapshots are the exact response bytes, named and
+recorded with their SHA-256 digest, and are decoded only after archival,
+with Decimal-safe number parsing (`source_bytes.decode_sec_json`). Fact idempotency is enforced
 here at the application level via a pre-insert existence check, backed at
 the database level by the two partial unique indexes on `financial_data`
 and the `UNIQUE` constraint on `filings.accession_number`.
@@ -13,6 +15,7 @@ and the `UNIQUE` constraint on `filings.accession_number`.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, DecimalException
@@ -31,6 +34,11 @@ from ibi.data_engine.sec_edgar.mapping import (
     FormTypeMismatchError,
     parse_companyfacts,
     parse_submissions,
+)
+from ibi.data_engine.sec_edgar.source_bytes import (
+    SourceDecodeError,
+    decode_sec_json,
+    sha256_hex,
 )
 from ibi.db.base import session_scope
 from ibi.db.locks import acquire_entity_write_lock
@@ -108,26 +116,70 @@ class IngestSummary:
         return any(r.error is not None for r in self.results)
 
 
+@dataclass(frozen=True, slots=True)
+class ArchivedSnapshot:
+    content_ref: str
+    sha256: str
+    byte_length: int
+
+
+def _write_new_file(path: Path, data: bytes) -> None:
+    """Create `path` with exactly `data`; never overwrite an existing file.
+
+    Written to a sibling `.partial` file, fsynced, then hard-linked into
+    place, so a reader never sees a half-written snapshot and an existing
+    snapshot can never be replaced (the link fails if the name exists).
+    """
+    partial = path.with_name(path.name + ".partial")
+    fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o444)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.link(partial, path)
+    finally:
+        partial.unlink(missing_ok=True)
+
+
 def _archive_raw_snapshot(
-    data_dir: Path, entity_id: str, label: str, retrieved_at: datetime, body: dict
-) -> str:
+    data_dir: Path, entity_id: str, label: str, retrieved_at: datetime, raw: bytes,
+    expected_sha256: str | None = None,
+) -> ArchivedSnapshot:
+    """Archive the exact response bytes and prove they were stored intact.
+
+    The digest is computed from the bytes we received, compared with the
+    connector's digest when it supplied one, and checked again by reading
+    the file back. The file name carries a digest prefix, so two different
+    responses can never share a name.
+    """
+    digest = sha256_hex(raw)
+    if expected_sha256 is not None and expected_sha256 != digest:
+        raise MalformedSecPayloadError(
+            f"{entity_id} {label}: connector digest {expected_sha256} does not match "
+            f"the received bytes ({digest})"
+        )
     entity_dir = data_dir / "sec_edgar" / entity_id
-    filename = f"{label}_{retrieved_at.strftime('%Y%m%dT%H%M%S%f')}Z.json"
+    filename = f"{label}_{retrieved_at.strftime('%Y%m%dT%H%M%S%f')}Z_{digest[:16]}.json"
     path = entity_dir / filename
     try:
-        encoded = json.dumps(body)
-    except (TypeError, ValueError) as e:
-        raise MalformedSecPayloadError(
-            f"{entity_id} {label}: cannot serialize snapshot: {e}"
-        ) from e
-    try:
         entity_dir.mkdir(parents=True, exist_ok=True)
-        path.write_text(encoded, encoding="utf-8")
+        _write_new_file(path, raw)
+        stored = path.read_bytes()
     except InterruptedError:
         raise
     except OSError as e:
         raise RawSnapshotWriteError(f"Cannot write {label} snapshot {path}: {e}") from e
-    return str(path)
+    if sha256_hex(stored) != digest:
+        raise RawSnapshotWriteError(f"{label} snapshot {path} does not read back intact")
+    return ArchivedSnapshot(content_ref=str(path), sha256=digest, byte_length=len(raw))
+
+
+def _decode_body(entity_id: str, label: str, raw: bytes) -> object:
+    try:
+        return decode_sec_json(raw)
+    except SourceDecodeError as e:
+        raise MalformedSecPayloadError(f"{entity_id} {label}: {e}") from e
 
 
 def _parse_rows(entity_id: str, label: str, body: dict, filing_lookup=None):
@@ -207,7 +259,7 @@ def ingest_entity(
 
     try:
         raw_records = connector.fetch(entity.entity_id)
-    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+    except (json.JSONDecodeError, UnicodeDecodeError, SourceDecodeError) as e:
         raise MalformedSecPayloadError(f"{entity.entity_id}: invalid SEC JSON: {e}") from e
     if not raw_records:
         raise ProviderError(f"No SEC snapshots available for {entity.entity_id}")
@@ -216,26 +268,36 @@ def ingest_entity(
     for raw in raw_records:
         try:
             label = raw.payload["kind"]
-            body = raw.payload["body"]
+            raw_bytes = raw.payload["raw_bytes"]
             if label not in ("submissions", "companyfacts") or label in bodies:
                 raise ValueError(f"unexpected or repeated snapshot kind: {label!r}")
+            if not isinstance(raw_bytes, bytes):
+                raise TypeError("raw_bytes must be the exact response bytes")
         except (KeyError, TypeError, ValueError) as e:
             raise MalformedSecPayloadError(f"{entity.entity_id}: malformed SEC record: {e}") from e
-        content_ref = _archive_raw_snapshot(
-            data_dir, entity.entity_id, label, raw.provenance.retrieval_date, body
+        # Archive first: a response that later fails to decode is still evidence.
+        archived = _archive_raw_snapshot(
+            data_dir, entity.entity_id, label, raw.provenance.retrieval_date, raw_bytes,
+            expected_sha256=raw.payload.get("sha256"),
         )
-        result.raw_snapshot_refs.append(content_ref)
+        result.raw_snapshot_refs.append(archived.content_ref)
         doc = SourceDocumentRecord(
             source=raw.provenance.source,
             source_tier=raw.provenance.source_tier.value,
             source_url=raw.provenance.source_url,
             retrieval_date=raw.provenance.retrieval_date,
-            content_ref=content_ref,
+            content_ref=archived.content_ref,
+            content_sha256=archived.sha256,
+            content_length=archived.byte_length,
         )
         session.add(doc)
         session.flush()
         result.source_documents_written += 1
-        bodies[label] = {"body": body, "source_document_id": doc.id, "content_ref": content_ref}
+        bodies[label] = {
+            "body": _decode_body(entity.entity_id, label, raw_bytes),
+            "source_document_id": doc.id,
+            "content_ref": archived.content_ref,
+        }
 
     filing_lookup = {}
     if "submissions" in bodies:

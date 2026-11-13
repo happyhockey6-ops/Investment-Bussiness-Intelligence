@@ -26,6 +26,7 @@ from ibi.core.epistemics import Provenance, SourceTier
 from ibi.data_engine.interfaces import RawRecord
 from ibi.data_engine.sec_edgar import ingest
 from ibi.data_engine.sec_edgar.fixed_universe import FixedUniverseEntity
+from ibi.data_engine.sec_edgar.source_bytes import sha256_hex
 from ibi.db import base as db
 from ibi.db.models import EntityRecord, FilingRecord, FinancialDataPointRecord, SourceDocumentRecord
 
@@ -65,7 +66,9 @@ class BatchConnector:
         now = datetime.now(UTC)
         return [
             RawRecord(
-                entity_id=entity_id, payload={"kind": kind, "body": body},
+                entity_id=entity_id,
+                payload={"kind": kind, "raw_bytes": (raw := json.dumps(body).encode()),
+                         "sha256": sha256_hex(raw)},
                 provenance=Provenance(
                     source="SEC EDGAR", source_tier=SourceTier.PRIMARY_REGULATORY,
                     retrieval_date=now, source_url=f"https://data.sec.gov/{entity_id}/{kind}.json",
@@ -239,14 +242,14 @@ def test_malformed_payload_is_a_company_failure(batch, malformed):
 
 
 def test_raw_snapshot_write_failure_rolls_back_and_continues(batch, monkeypatch):
-    write = Path.write_text
+    write = ingest._write_new_file
 
-    def fail_middle_snapshot(path, *args, **kwargs):
+    def fail_middle_snapshot(path, data):
         if MIDDLE in path.parts and path.name.startswith("companyfacts_"):
             raise PermissionError("simulated read-only archive")
-        return write(path, *args, **kwargs)
+        return write(path, data)
 
-    monkeypatch.setattr(Path, "write_text", fail_middle_snapshot)
+    monkeypatch.setattr(ingest, "_write_new_file", fail_middle_snapshot)
     failed = assert_isolated(batch, ingest.run_ingestion(batch.settings))
     assert failed.error_type == "RawSnapshotWriteError"
     assert "simulated read-only archive" in failed.error
@@ -362,14 +365,14 @@ def test_interruptions_propagate_and_roll_back_the_interrupted_company(batch, in
 
 
 def test_snapshot_interruption_is_not_converted_to_a_company_failure(batch, monkeypatch):
-    write = Path.write_text
+    write = ingest._write_new_file
 
-    def interrupt_middle_snapshot(path, *args, **kwargs):
+    def interrupt_middle_snapshot(path, data):
         if MIDDLE in path.parts and path.name.startswith("companyfacts_"):
             raise InterruptedError("snapshot interrupted")
-        return write(path, *args, **kwargs)
+        return write(path, data)
 
-    monkeypatch.setattr(Path, "write_text", interrupt_middle_snapshot)
+    monkeypatch.setattr(ingest, "_write_new_file", interrupt_middle_snapshot)
     with pytest.raises(InterruptedError, match="snapshot interrupted"):
         ingest.run_ingestion(batch.settings)
     assert batch.connector.calls == [c.entity_id for c in COMPANIES[:2]]

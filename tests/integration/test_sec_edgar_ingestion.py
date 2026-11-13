@@ -21,6 +21,7 @@ from ibi.core.epistemics import Provenance, SourceTier
 from ibi.data_engine.interfaces import RawRecord
 from ibi.data_engine.sec_edgar.fixed_universe import FixedUniverseEntity
 from ibi.data_engine.sec_edgar.ingest import ingest_entity
+from ibi.data_engine.sec_edgar.source_bytes import sha256_hex
 from ibi.db.base import Base
 from ibi.db.models import FilingRecord, FinancialDataPointRecord
 
@@ -35,11 +36,12 @@ def _load(name: str) -> dict:
 
 class FakeConnector:
     """Returns fixture bytes with the exact payload shape
-    `SecEdgarConnector.fetch` produces, with no network access."""
+    `SecEdgarConnector.fetch` produces, with no network access. Accepts
+    parsed documents (encoded with `json.dumps`) or exact bytes."""
 
-    def __init__(self, submissions: dict, companyfacts: dict):
-        self._submissions = submissions
-        self._companyfacts = companyfacts
+    def __init__(self, submissions: dict | bytes, companyfacts: dict | bytes):
+        self._submissions = _as_bytes(submissions)
+        self._companyfacts = _as_bytes(companyfacts)
 
     @property
     def source_name(self) -> str:
@@ -61,19 +63,23 @@ class FakeConnector:
         return [
             RawRecord(
                 entity_id=entity_id,
-                payload={"kind": "submissions", "url": submissions_url, "body": self._submissions},
+                payload=raw_payload("submissions", submissions_url, self._submissions),
                 provenance=_provenance(submissions_url),
             ),
             RawRecord(
                 entity_id=entity_id,
-                payload={
-                    "kind": "companyfacts",
-                    "url": companyfacts_url,
-                    "body": self._companyfacts,
-                },
+                payload=raw_payload("companyfacts", companyfacts_url, self._companyfacts),
                 provenance=_provenance(companyfacts_url),
             ),
         ]
+
+
+def _as_bytes(document: dict | bytes) -> bytes:
+    return document if isinstance(document, bytes) else json.dumps(document).encode()
+
+
+def raw_payload(kind: str, url: str, raw: bytes) -> dict:
+    return {"kind": kind, "url": url, "raw_bytes": raw, "sha256": sha256_hex(raw)}
 
 
 @pytest.fixture

@@ -9,8 +9,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import asdict
-from datetime import datetime
+from dataclasses import asdict, is_dataclass
+from datetime import date, datetime
+from decimal import Decimal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
@@ -40,44 +41,53 @@ def search(q: str) -> list[FixedUniverseEntity]:
     if not needle:
         return list(FIXED_UNIVERSE)
     return [
-        e for e in FIXED_UNIVERSE
+        e
+        for e in FIXED_UNIVERSE
         if needle in (e.ticker or "").lower() or needle in e.canonical_name.lower()
     ]
 
 
 def _jsonable(f: Fundamentals, entity: FixedUniverseEntity) -> dict:
-    def num(v):
-        # Exact decimal text, independent of the database column's scale.
-        return canonical_decimal(v) if v is not None else None
-
-    def cell(c):
-        d = asdict(c)
-        d["value"] = num(d["value"])
-        for src in [d["source"], d["original"], *d["conflicting"]]:
-            if src is not None:
-                src["value"] = num(src["value"])
-                src["known_available_at"] = src["known_available_at"].isoformat()
-        return d
+    def exact(value):
+        if is_dataclass(value):
+            return exact(asdict(value))
+        if isinstance(value, Decimal):
+            return canonical_decimal(value)
+        if isinstance(value, (datetime, date)):
+            return value.isoformat()
+        if isinstance(value, dict):
+            return {k: exact(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [exact(v) for v in value]
+        return value
 
     return {
-        "company": {"ticker": entity.ticker, "name": entity.canonical_name,
-                    "cik": entity.cik, "entity_id": entity.entity_id},
+        "company": {
+            "ticker": entity.ticker,
+            "name": entity.canonical_name,
+            "cik": entity.cik,
+            "entity_id": entity.entity_id,
+        },
         "as_of": f.as_of.isoformat(),
         "statement_version": f.statement_version,
+        "non_reliance_coverage": f.non_reliance_coverage,
         "basis": "As reported in annual 10-K/10-K/A filings; facts only, no estimates.",
-        "fiscal_years": [{"label": y.label, "start": y.start.isoformat(),
-                          "end": y.end.isoformat()} for y in f.years],
+        "fiscal_years": [
+            {"label": y.label, "start": y.start.isoformat(), "end": y.end.isoformat()}
+            for y in f.years
+        ],
         "line_items": [
-            {"key": item.key, "label": item.label, "statement": item.statement.value,
-             "unit": item.unit,
-             "values": {y.end.isoformat(): cell(f.rows[item.key][y.end]) for y in f.years}}
+            {
+                "key": item.key,
+                "label": item.label,
+                "statement": item.statement.value,
+                "unit": item.unit,
+                "values": {y.end.isoformat(): exact(f.rows[item.key][y.end]) for y in f.years},
+            }
             for item in LINE_ITEMS
         ],
         "derived": {
-            metric: {end.isoformat(): {"status": c.status,
-                                       "value": num(c.value),
-                                       "detail": c.detail}
-                     for end, c in cells.items()}
+            metric: {end.isoformat(): exact(c) for end, c in cells.items()}
             for metric, cells in f.derived.items()
         },
     }

@@ -180,7 +180,7 @@ def test_json_api(seeded):
     c = client(seeded)
     assert c.get("/api/companies", params={"q": "app"}).json()[0]["ticker"] == "AAPL"
     body = c.get("/api/companies/aapl/fundamentals").json()
-    assert body["company"]["cik"] == CIK and body["statement_version"] == "1"
+    assert body["company"]["cik"] == CIK and body["statement_version"] == "2"
     assert [y["label"] for y in body["fiscal_years"]] == ["FY2024", "FY2023"]
     items = {i["key"]: i for i in body["line_items"]}
     ni23 = items["net_income"]["values"]["2023-09-30"]

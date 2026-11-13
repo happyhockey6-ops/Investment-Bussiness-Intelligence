@@ -1,5 +1,5 @@
 {
-  "_note": "Reference values for the SEC reconciliation. Units are USD unless stated; EPS is USD per share. verified=false means the values were transcribed for this check and must be confirmed against the filing on the first run; a mismatch is a finding to investigate, not proof Trusty is wrong.",
+  "_note": "Reference values for the SEC reconciliation. Units are USD unless stated; EPS is USD per share. verified=false means the values were transcribed for this check and must be confirmed against the filing on the first run; a mismatch is a finding to investigate, not proof Trusty is wrong. Derived references are deterministic arithmetic on these unverified inputs and are not independent filing verification. Validation must fail until verified=true is justified against the cited filings.",
   "companies": {
     "AAPL": {
       "filing": "Apple Inc. Form 10-K for the fiscal year ended 2024-09-28",
@@ -15,6 +15,10 @@
         "capital_expenditures": "9447000000",
         "cash": "29943000000",
         "total_assets": "364980000000"
+      },
+      "derived": {
+        "ibi:gross_margin": "0.4620634982",
+        "ibi:free_cash_flow": "108807000000"
       }
     },
     "MSFT": {
@@ -31,6 +35,10 @@
         "capital_expenditures": "44477000000",
         "cash": "18315000000",
         "total_assets": "512163000000"
+      },
+      "derived": {
+        "ibi:gross_margin": "0.6976444383",
+        "ibi:free_cash_flow": "74071000000"
       }
     }
   }

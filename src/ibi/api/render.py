@@ -16,9 +16,11 @@ from ibi.research.fundamentals import (
     Cell,
     CellStatus,
     DerivedCell,
+    FilingNotice,
     Fundamentals,
     Source,
     Statement,
+    filing_url,
 )
 
 _STYLE = """
@@ -45,6 +47,11 @@ thead th{background:var(--head)}tbody tr:last-child td{border-bottom:0}
 .restated{background:var(--warnbg);color:var(--warn)}
 .conflict{background:var(--badbg);color:var(--bad)}
 sup a{text-decoration:none;font-size:.7rem}ul.results{padding-left:1.1rem}
+summary{cursor:pointer;color:var(--accent);white-space:normal}
+details{text-align:left;white-space:normal;max-width:22rem;min-width:7rem}
+details ul{padding-left:1.2rem;overflow-wrap:anywhere}
+summary:focus-visible{outline:2px solid var(--accent)}
+.unverified{background:var(--warnbg);color:var(--warn)}
 """
 
 
@@ -70,8 +77,10 @@ def _search_form(q: str = "") -> str:
 
 def redirect_page(location: str) -> str:
     loc = escape(location, quote=True)
-    return _page("Redirecting", f"<meta http-equiv=refresh content='0;url={loc}'>"
-                 f"<p><a href='{loc}'>Continue</a></p>")
+    return _page(
+        "Redirecting",
+        f"<meta http-equiv=refresh content='0;url={loc}'><p><a href='{loc}'>Continue</a></p>",
+    )
 
 
 def home_page(q: str, matches: list[FixedUniverseEntity]) -> str:
@@ -80,14 +89,21 @@ def home_page(q: str, matches: list[FixedUniverseEntity]) -> str:
         f"{escape(e.ticker or '')}</a> — {escape(e.canonical_name)}</li>"
         for e in matches
     )
-    found = f"<ul class=results>{items}</ul>" if items else (
-        f"<p class=muted>No covered company matches “{escape(q)}”.</p>"
+    found = (
+        f"<ul class=results>{items}</ul>"
+        if items
+        else (f"<p class=muted>No covered company matches “{escape(q)}”.</p>")
     )
-    return _page("Trusty", (
-        "<h1>Trusty</h1><p class=muted>Private investment research. Sourced, "
-        "reproducible fundamentals from SEC filings.</p>"
-        + _search_form(q) + "<h2>Covered companies</h2>" + found
-    ))
+    return _page(
+        "Trusty",
+        (
+            "<h1>Trusty</h1><p class=muted>Private investment research. Sourced, "
+            "reproducible fundamentals from SEC filings.</p>"
+            + _search_form(q)
+            + "<h2>Covered companies</h2>"
+            + found
+        ),
+    )
 
 
 def format_value(value: Decimal, unit: str) -> str:
@@ -98,37 +114,122 @@ def format_value(value: Decimal, unit: str) -> str:
 
 
 def _source_title(s: Source, label: str) -> str:
-    return (f"{label}: {s.value} ({s.tag}) — {s.form_type} accession {s.accession_number}, "
-            f"public {s.known_available_at:%Y-%m-%d %H:%M} UTC")
+    return (
+        f"{label}: {s.value} ({s.tag}) — {s.form_type} accession {s.accession_number}, "
+        f"public {s.known_available_at:%Y-%m-%d %H:%M} UTC"
+    )
+
+
+def _source_details(s: Source, label: str) -> str:
+    return (
+        f"<li>{escape(_source_title(s, label))}; fact {s.fact_id}; "
+        f"precision {escape(s.availability_precision)} "
+        f"<a href='{escape(s.url, quote=True)}' rel=noreferrer target=_blank>"
+        "Source filing</a></li>"
+    )
+
+
+def _notice_details(notice: FilingNotice) -> str:
+    return (
+        f"<li>Non-reliance notice: {escape(notice.form_type)} "
+        f"{escape(notice.accession_number)}, items {escape(notice.items or '')}, "
+        f"public {notice.known_available_at:%Y-%m-%d %H:%M} UTC; "
+        f"precision {escape(notice.availability_precision)} "
+        f"<a href='{escape(notice.url, quote=True)}' rel=noreferrer target=_blank>"
+        "Notice filing</a></li>"
+    )
 
 
 def _cell_html(cell: Cell, unit: str) -> str:
-    if cell.status is CellStatus.MISSING:
-        return "<td class=muted title='Not reported in an annual filing'>—</td>"
+    if cell.status is CellStatus.MISSING and not cell.evidence:
+        return (
+            "<td class=muted>— <span class=small>"
+            "Not reported in an eligible annual filing</span></td>"
+        )
+    css = ""
     if cell.status is CellStatus.CONFLICTING:
-        detail = "; ".join(_source_title(s, "Reported") for s in cell.conflicting)
-        return (f"<td class=conflict title='{escape(detail, quote=True)}'>"
-                "conflicting</td>")
-    assert cell.source is not None and cell.value is not None
-    title = _source_title(cell.source, "As reported")
-    css, marker = "", ""
-    if cell.status is CellStatus.RESTATED and cell.original is not None:
-        title += " | " + _source_title(cell.original, "Originally reported")
-        css, marker = " class=restated", " R"
-    link = (f"<sup><a href='{escape(cell.source.url, quote=True)}' rel=noreferrer "
-            f"target=_blank aria-label='Source filing'>src</a></sup>")
-    return (f"<td{css} title='{escape(title, quote=True)}'>"
-            f"{escape(format_value(cell.value, unit))}{marker}{link}</td>")
+        css, display = " class=conflict", "conflicting"
+    elif cell.status is CellStatus.UNVERIFIED_REVISION:
+        css, display = " class=unverified", "unverified revision"
+    elif cell.status is CellStatus.MISSING:
+        display = "—"
+    else:
+        assert cell.source is not None and cell.value is not None
+        display = escape(format_value(cell.value, unit))
+        if cell.status is CellStatus.RESTATED:
+            css, display = " class=restated", display + " R"
+    entries = []
+    seen = set()
+    for label, sources in (
+        ("Annual basis", (cell.source,) if cell.source else ()),
+        ("Originally reported", (cell.original,) if cell.original else ()),
+        ("Conflicting evidence", cell.conflicting),
+        ("Supporting/revision evidence", cell.evidence),
+        ("Historical disagreement (superseded)", cell.historical_conflicts),
+    ):
+        for source in sources:
+            key = (label, source.fact_id)
+            if key not in seen:
+                entries.append(_source_details(source, label))
+                seen.add(key)
+    entries.extend(_notice_details(notice) for notice in cell.notices)
+    reason = (
+        f"<p>{escape(cell.reason_code or '')}: {escape(cell.detail)}</p>" if cell.detail else ""
+    )
+    details = (
+        "<details><summary>Sources and evidence</summary>"
+        + reason
+        + "<ul>"
+        + "".join(entries)
+        + "</ul></details>"
+    )
+    return f"<td{css}>{display}{details}</td>"
 
 
-def _derived_html(cell: DerivedCell | None, metric: str) -> str:
-    if cell is None or cell.status != "value" or cell.value is None:
-        reason = "not computed yet" if cell is None or cell.status == "Unknown" else (
-            f"{cell.status}: {cell.detail}")
-        return f"<td class=muted title='{escape(reason, quote=True)}'>—</td>"
-    text = f"{cell.value * 100:,.1f}%" if metric == "ibi:gross_margin" else format_value(
-        cell.value, "USD")
-    return f"<td title='Calculated by financial_engine'>{escape(text)}</td>"
+def _derived_html(cell: DerivedCell | None, metric: str, cik: int) -> str:
+    if cell is None:
+        return "<td class=muted>— Not computed</td>"
+    if cell.status != "value" or cell.value is None:
+        display = f"<span class=muted>— {escape(cell.status)}</span>"
+    else:
+        display = (
+            f"{cell.value * 100:,.1f}%"
+            if metric == "ibi:gross_margin"
+            else escape(format_value(cell.value, "USD"))
+        )
+    versions = cell.versions
+    version_text = (
+        f"formula {versions.calculation_version}, policy {versions.selection_policy_version}"
+        if versions
+        else "versions unavailable"
+    )
+    effective = cell.effective_from.isoformat() if cell.effective_from else "unavailable"
+    metadata = (
+        f"<p>Result {cell.result_id}; generation {cell.generation_id}; {escape(version_text)}; "
+        f"basis {escape(cell.basis_accession or 'unavailable')}; "
+        f"effective {escape(effective)}; "
+        f"revision {escape(cell.revision_kind or 'none')}</p>"
+    )
+    evidence = "".join(
+        f"<li>{escape(e.role)} / {escape(e.relation)}: {escape(e.metric_id)} = {e.value}; "
+        f"fact {e.fact_id}; {escape(e.form_type or 'unknown form')}; "
+        f"public {e.known_available_at:%Y-%m-%d %H:%M} UTC; "
+        f"<a href='{escape(filing_url(cik, e.accession_number, None), quote=True)}' "
+        f"rel=noreferrer target=_blank>{escape(e.accession_number)}</a></li>"
+        for e in cell.evidence
+    )
+    reason = (
+        f"<p>{escape(cell.reason_code or '')}: {escape(cell.detail)}</p>" if cell.detail else ""
+    )
+    return (
+        f"<td>{display}<details><summary>Calculation and evidence</summary>"
+        + metadata
+        + reason
+        + "<ul>"
+        + evidence
+        + "".join(_notice_details(n) for n in cell.notices)
+        + "</ul></details></td>"
+    )
 
 
 _UNIT_NOTE = {"USD": "USD millions", "USD/shares": "USD per share", "shares": "millions"}
@@ -140,15 +241,22 @@ _STATEMENT_TITLE = {
 
 
 def company_page(entity: FixedUniverseEntity, f: Fundamentals) -> str:
-    head = (f"<p class=small><a href='/'>← Search</a></p>"
-            f"<h1>{escape(entity.canonical_name)} <span class=muted>"
-            f"{escape(entity.ticker or '')}</span></h1>"
-            f"<p class='muted small'>SEC CIK {entity.cik} · as of "
-            f"{f.as_of:%Y-%m-%d %H:%M} UTC · statement v{escape(f.statement_version)}</p>")
+    head = (
+        f"<p class=small><a href='/'>← Search</a></p>"
+        f"<h1>{escape(entity.canonical_name)} <span class=muted>"
+        f"{escape(entity.ticker or '')}</span></h1>"
+        f"<p class='muted small'>SEC CIK {entity.cik} · as of "
+        f"{f.as_of:%Y-%m-%d %H:%M} UTC · statement v{escape(f.statement_version)}</p>"
+    )
     if not f.has_data:
-        return _page(entity.canonical_name, head + (
-            "<p>No annual (10-K) figures are stored for this company yet. "
-            "Run SEC ingestion first.</p>"))
+        return _page(
+            entity.canonical_name,
+            head
+            + (
+                "<p>No annual (10-K) figures are stored for this company yet. "
+                "Run SEC ingestion first.</p>"
+            ),
+        )
     years = "".join(f"<th scope=col>{escape(y.label)}</th>" for y in f.years)
     sections = []
     for statement, title in _STATEMENT_TITLE.items():
@@ -157,24 +265,39 @@ def company_page(entity: FixedUniverseEntity, f: Fundamentals) -> str:
             f"<span class='muted small unit'>{escape(_UNIT_NOTE[item.unit])}</span></th>"
             + "".join(_cell_html(f.rows[item.key][y.end], item.unit) for y in f.years)
             + "</tr>"
-            for item in LINE_ITEMS if item.statement is statement
+            for item in LINE_ITEMS
+            if item.statement is statement
         )
         sections.append(
             f"<h2>{title}</h2><div class=scroll><table><thead><tr><th scope=col>"
-            f"</th>{years}</tr></thead><tbody>{rows}</tbody></table></div>")
+            f"</th>{years}</tr></thead><tbody>{rows}</tbody></table></div>"
+        )
     derived_rows = "".join(
-        f"<tr><th scope=row>{escape(label)}</th>"
-        + "".join(_derived_html(f.derived.get(metric, {}).get(y.end), metric) for y in f.years)
+        f"<tr><th scope=row>{escape(label)}"
+        + (
+            "<span class='muted small unit'>USD millions</span>"
+            if metric == "ibi:free_cash_flow"
+            else ""
+        )
+        + "</th>"
+        + "".join(
+            _derived_html(f.derived.get(metric, {}).get(y.end), metric, entity.cik) for y in f.years
+        )
         + "</tr>"
         for metric, label in DERIVED_METRICS
     )
     sections.append(
         "<h2>Calculated metrics</h2><div class=scroll><table><thead><tr><th scope=col>"
-        f"</th>{years}</tr></thead><tbody>{derived_rows}</tbody></table></div>")
-    legend = ("<p class='muted small'>Figures are facts as reported in annual 10-K/10-K/A "
-              "filings; nothing is estimated. <b>src</b> opens the source filing; hover or "
-              "long-press a value for its filing, XBRL tag and public date. <span "
-              "class=restated>&nbsp;R&nbsp;</span> a later filing restated the original "
-              "value. <span class=conflict>&nbsp;conflicting&nbsp;</span> a filing reports "
-              "two different values; neither is chosen. — not reported.</p>")
+        f"</th>{years}</tr></thead><tbody>{derived_rows}</tbody></table></div>"
+    )
+    legend = (
+        "<p class='muted small'>Annual values come from eligible 10-K/10-K/A filings. "
+        "Open Sources and evidence for exact values, tags, filing links and public dates. "
+        "R marks a changed annual value with an unambiguous original. "
+        "Conflicting and unverified revisions have no accepted value. "
+        "Historical disagreements remain available separately. — means missing or uncertain; "
+        "open the details for the reason. Non-reliance coverage: "
+        f"{escape(f.non_reliance_coverage)}.</p>"
+    )
+
     return _page(f"{entity.ticker} · Trusty", head + "".join(sections) + legend)

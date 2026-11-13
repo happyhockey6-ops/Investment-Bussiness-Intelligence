@@ -23,7 +23,7 @@ import os
 import sys
 from collections import Counter
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from importlib import resources
 from pathlib import Path
 
@@ -41,6 +41,18 @@ from ibi.financial_engine import results_store as rs
 from ibi.research.fundamentals import CellStatus, annual_fundamentals
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+REQUIRED_REFERENCE_ITEMS = (
+    "revenue",
+    "cost_of_revenue",
+    "operating_income",
+    "net_income",
+    "eps_diluted",
+    "operating_cash_flow",
+    "capital_expenditures",
+    "cash",
+    "total_assets",
+)
+REQUIRED_DERIVED_METRICS = ("ibi:gross_margin", "ibi:free_cash_flow")
 
 
 def load_expected() -> dict:
@@ -59,34 +71,100 @@ def guard_database(url: str) -> None:
 def reconcile(session: Session, expected: dict) -> tuple[list[str], bool]:
     lines: list[str] = []
     ok = True
+    references = expected.get("companies", {})
+    if not isinstance(references, dict):
+        return ["FAIL companies: reference mapping is missing or invalid"], False
+
+    def expected_number(raw):
+        try:
+            value = Decimal(str(raw))
+            return value if value.is_finite() else None
+        except InvalidOperation:
+            return None
+
     for entity in FIXED_UNIVERSE:
-        ref = expected["companies"].get(entity.ticker or "")
+        ref = references.get(entity.ticker or "")
         f = annual_fundamentals(session, entity.entity_id, entity.cik)
         statuses = Counter(c.status.value for row in f.rows.values() for c in row.values())
-        lines.append(f"\n== {entity.ticker} {entity.canonical_name}: {len(f.years)} fiscal "
-                     f"years; cells {dict(statuses)}")
+        lines.append(
+            f"\n== {entity.ticker} {entity.canonical_name}: {len(f.years)} fiscal "
+            f"years; cells {dict(statuses)}"
+        )
         for metric, cells in f.derived.items():
             lines.append(f"   {metric}: {dict(Counter(c.status for c in cells.values()))}")
-        if ref is None:
-            lines.append("   no reference values")
+        if not f.has_data:
+            ok = False
+            lines.append("   FAIL company: no annual data")
+        if not isinstance(ref, dict):
+            ok = False
+            lines.append("   FAIL company: missing required reference")
             continue
-        end = date.fromisoformat(ref["fiscal_year_end"])
-        flag = "" if ref.get("verified") else " (reference not yet verified against the filing)"
-        lines.append(f"   reference: {ref['filing']}{flag}")
-        for key, want in ref["values"].items():
+        if ref.get("verified") is not True:
+            ok = False
+            lines.append("   FAIL reference: not verified against the filing")
+        if not ref.get("filing"):
+            ok = False
+            lines.append("   FAIL reference: missing source filing")
+        try:
+            end = date.fromisoformat(ref["fiscal_year_end"])
+        except (KeyError, TypeError, ValueError):
+            ok = False
+            lines.append("   FAIL reference: missing or invalid fiscal_year_end")
+            continue
+        values = ref.get("values", {})
+        if not isinstance(values, dict):
+            values = {}
+        keys = set(REQUIRED_REFERENCE_ITEMS) | set(values)
+        for key in sorted(keys):
+            if key not in values or (want := expected_number(values[key])) is None:
+                ok = False
+                lines.append(f"   FAIL {key}: missing or invalid required reference value")
+                continue
             cell = f.rows.get(key, {}).get(end)
-            want = Decimal(str(want))
-            if cell is None or cell.status in (CellStatus.MISSING, CellStatus.CONFLICTING):
+            if cell is None or cell.status not in (CellStatus.VALUE, CellStatus.RESTATED):
                 ok = False
                 status = "absent" if cell is None else cell.status.value
                 lines.append(f"   FAIL {key}: expected {want}, page shows {status}")
             elif cell.value != want:
                 ok = False
-                lines.append(f"   FAIL {key}: expected {want}, got {cell.value} "
-                             f"({cell.source.tag}, {cell.source.accession_number})")
+                lines.append(
+                    f"   FAIL {key}: expected {want}, got {cell.value} "
+                    f"({cell.source.tag}, {cell.source.accession_number})"
+                )
             else:
-                lines.append(f"   ok   {key}: {cell.value} ({cell.source.tag}, "
-                             f"{cell.source.accession_number}, {cell.status.value})")
+                lines.append(
+                    f"   ok   {key}: {cell.value} ({cell.source.tag}, "
+                    f"{cell.source.accession_number}, {cell.status.value})"
+                )
+        derived_refs = ref.get("derived", {})
+        if not isinstance(derived_refs, dict):
+            derived_refs = {}
+        for metric in REQUIRED_DERIVED_METRICS:
+            want = expected_number(derived_refs.get(metric))
+            cell = f.derived.get(metric, {}).get(end)
+            if want is None:
+                ok = False
+                lines.append(f"   FAIL {metric}: missing or invalid required derived reference")
+            if cell is None or cell.status != "value" or cell.value is None:
+                ok = False
+                status = "absent" if cell is None else cell.status
+                lines.append(f"   FAIL {metric}: required metric unavailable ({status})")
+                continue
+            if want is not None and cell.value != want:
+                ok = False
+                lines.append(f"   FAIL {metric}: expected {want}, got {cell.value}")
+            elif want is not None:
+                lines.append(f"   ok   {metric}: {cell.value}")
+            if (
+                cell.result_id is None
+                or cell.generation_id is None
+                or cell.versions is None
+                or cell.basis_accession is None
+                or cell.effective_from is None
+                or not cell.evidence
+            ):
+                ok = False
+                lines.append(f"   FAIL {metric}: calculation provenance is incomplete")
     return lines, ok
 
 
@@ -116,16 +194,19 @@ def main(argv: list[str] | None = None) -> int:
     summary = ingest.run_ingestion(settings)
     failures = [r for r in summary.results if r.status != "success"]
     for r in summary.results:
-        print(f"ingest {r.entity_id}: {r.status} facts_written={r.facts_written} "
-              f"skipped={r.facts_skipped_duplicate} {r.error_type or ''} {r.error or ''}")
+        print(
+            f"ingest {r.entity_id}: {r.status} facts_written={r.facts_written} "
+            f"skipped={r.facts_skipped_duplicate} {r.error_type or ''} {r.error or ''}"
+        )
 
     with Session(engine) as s, s.begin():
         for entity in FIXED_UNIVERSE:
-            for metric in ("ibi:gross_margin", "ibi:free_cash_flow"):
+            for metric in REQUIRED_DERIVED_METRICS:
                 pair = rs.VersionPair("1", "1")
                 outcome = rs.build_generation(s, entity.entity_id, metric, pair)
-                print(f"build {entity.ticker} {metric}: {outcome.status} "
-                      f"rows={outcome.rows_written}")
+                print(
+                    f"build {entity.ticker} {metric}: {outcome.status} rows={outcome.rows_written}"
+                )
 
     with Session(engine) as s:
         lines, ok = reconcile(s, load_expected())

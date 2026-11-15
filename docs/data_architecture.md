@@ -436,6 +436,65 @@ ticker does not establish a legal delisting date, and no earlier unobserved
 history is reconstructed. ETFs/funds from `company_tickers_mf.json`, web/UI
 integration and changes to the financial engine are outside this slice.
 
+## On-demand SEC company ingestion
+
+After refreshing the archived security directory, run:
+
+```bash
+python -m ibi.data_engine.sec_edgar.ingest --ticker MSFT --ticker NVDA
+```
+
+Each argument goes through `listings.resolve_ticker`: exact ticker or CIK
+only, never a name-search fallback. `Unknown`, `ConflictingEvidence` and
+lookup errors are individual failed outcomes, so other requests continue.
+The summary retains each original query, the listing source-document ID
+and resolution evidence. Both new company source documents also retain the
+request and resolved ticker/CIK/listing-source ID in their existing `notes`
+field, so the lookup lineage survives the process without a new schema.
+The archived SEC response bytes themselves are unchanged.
+New entities take their name/CIK from the listing;
+an existing entity's name is never overwritten. With no `--ticker`, the CLI
+uses `FIXED_UNIVERSE`; it does not ingest the entire directory.
+
+For each company, both connector responses are fully fetched **before**
+opening its write session or taking the entity advisory lock. Within that
+transaction the existing archive/verify/decode rules apply. Financial-fact
+identities and values are loaded once for the company; existing filings are
+looked up globally by incoming accession in batches of 500, since different
+registrants can share an accession. Exact Decimal
+comparisons skip identical duplicates and raise `DuplicateFactConflict` on
+different values, preserving its original/staged fact ID and source evidence.
+New facts and filings use multi-VALUES INSERTs in batches of 500. The partial
+unique indexes remain the final database guard; no conflicts are silently
+discarded by SQL. All writes for a failed company roll back together, with
+the raw snapshots retained as before. Re-ingestion adds no facts/filings;
+fresh source snapshots/document rows still record each fetch attempt.
+
+After successful ingestion commits, the CLI builds `ibi:gross_margin` and
+`ibi:free_cash_flow`, using formula/policy pair `(1, 1)`, in a separate
+transaction for that company. A build or build-commit failure rolls back both
+builds, reports `failure_stage=metrics`, retains the committed ingestion and
+continues with the remaining requests. Generation IDs and build outcomes are
+returned only after commit. `metrics_status=success` means the build finished;
+it does not claim that every metric is an available value. Missing inputs
+remain the engine's `Unknown`/`InsufficientEvidence`, never fabricated numbers.
+
+The Python API `run_ingestion(settings, companies=[...])` accepts an explicit
+company list; an empty list ingests nothing. Its legacy no-list call remains
+ingestion-only for compatibility. Set `tickers=[...]` for exact resolution
+and `build_metrics=True` to enable the same post-commit builds as the CLI.
+Each result distinguishes committed ingestion, metrics status and the failure
+stage (`resolution`, `fetch`, `ingestion`, `metrics`). The CLI exits nonzero
+if any request fails. Interruptions and cancellation propagate.
+
+`test_ingest_by_ticker.py` checks SQLite/PostgreSQL with no external HTTP.
+Its generated 5,000-fact/5,000-filing fixture asserts at most 39 SQL statements
+on first ingestion and 16 on re-ingestion, with one existing-fact load, ten
+bounded global filing lookups and actual multi-VALUES batches. A PostgreSQL probe can
+acquire the entity lock while the connector fetches, and cannot acquire it
+inside archival (positive control). Existing ingestion/integrity/source
+tests are unchanged. No migration or financial-engine rule is introduced.
+
 ## What's not yet built
 
 Every other domain package's `SourceConnector`-equivalent remains

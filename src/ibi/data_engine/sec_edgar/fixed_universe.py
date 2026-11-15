@@ -4,7 +4,9 @@ Exactly two companies, chosen for being large, stable, and well-documented
 (low risk of an incorrect CIK), giving genuinely varied real data to test
 against. This list must not be expanded or changed casually — doing so is
 an explicit, deliberate decision (see DECISIONS.md), not a routine edit.
-Phase 1 has no general entity resolver; this is the entire universe.
+This remains the default when no companies/tickers are supplied. On-demand
+ingestion resolves explicit tickers/CIKs through the archived SEC listings;
+it does not expand or rewrite this controlled default list.
 """
 
 from __future__ import annotations

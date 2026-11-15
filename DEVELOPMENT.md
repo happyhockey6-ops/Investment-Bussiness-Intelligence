@@ -173,12 +173,31 @@ points at. Safe to re-run: idempotent (see DECISIONS.md). Requires a real
 `IBI_SEC_USER_AGENT` (SEC's fair-access policy; not a secret, but must be a
 genuine contact — see SECURITY.md).
 
+For on-demand ingestion, first refresh the archived SEC directory, then
+provide exact tickers or CIKs (name searches are not accepted):
+
+```bash
+python -m ibi.data_engine.sec_edgar.listings refresh
+python -m ibi.data_engine.sec_edgar.ingest --ticker MSFT --ticker NVDA
+```
+
+The CLI builds gross margin and free cash flow at formula/policy pair `1,1`
+after each company's ingestion commits. With no `--ticker` it uses the same
+fixed default universe. The legacy Python call above remains ingestion-only;
+`run_ingestion(settings, companies=[...], build_metrics=True)` opts into
+post-commit metric builds for an explicit company list. `tickers=[...]` uses
+the exact listings resolver. The CLI reports every request and exits nonzero
+if resolution, fetch, ingestion or building fails. A metric-build failure
+has `failure_stage=metrics` and `ingestion_committed=True`: its SEC facts
+remain committed, while that company's build transaction rolls back.
+
 `run_ingestion()` returns one `IngestResult` per company, in universe order:
 `status` is `success` or `failed`; failures include `error_type` and `error`.
 Each company uses a separate session/transaction. An outcome becomes successful
 only after commit; a company exception (including a database/commit error)
 rolls back its entity, filing, fact and source-document writes before the batch
-continues. Failed outcomes report zero committed-write counters. Global
+continues. Ingestion failures report zero committed-write counters; a later
+metric-build failure retains its already-committed counters. Global
 configuration failures occur before the batch; cancellation, process interrupts,
 `InterruptedError` and `MemoryError` propagate rather than becoming outcomes.
 

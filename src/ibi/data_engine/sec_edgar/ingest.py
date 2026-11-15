@@ -453,13 +453,16 @@ def ingest_entity(
     if "submissions" in bodies:
         filing_rows = _parse_rows(entity.entity_id, "submissions", bodies["submissions"]["body"])
         filing_lookup = {f.accession_number: f for f in filing_rows}
-        existing = set(
-            session.scalars(
-                select(FilingRecord.accession_number).where(
-                    FilingRecord.entity_id == entity.entity_id
+        accessions = list(filing_lookup)
+        existing = set()
+        for offset in range(0, len(accessions), BATCH_SIZE):
+            existing.update(
+                session.scalars(
+                    select(FilingRecord.accession_number).where(
+                        FilingRecord.accession_number.in_(accessions[offset : offset + BATCH_SIZE])
+                    )
                 )
             )
-        )
         pending_filings = []
         for frow in filing_rows:
             if frow.accession_number in existing:

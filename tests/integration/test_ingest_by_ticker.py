@@ -29,6 +29,7 @@ from ibi.db.models import (
 )
 from ibi.financial_engine import results_store as rs
 from tests.integration import test_sec_edgar_integrity as harness
+from tests.integration.test_sec_edgar_ingestion import _load
 from tests.integration.test_sec_edgar_integrity import COMPANIES, MIDDLE, state
 
 batch = harness.batch
@@ -92,6 +93,9 @@ def test_5000_facts_and_filings_have_bounded_sql_and_are_idempotent(batch):
 
     def capture(connection, cursor, statement, parameters, context, executemany):
         statements.append(statement.lower())
+        if "from filings" in statement.lower():
+            assert "filings.entity_id" not in statement.lower()
+            assert 0 < len(parameters) <= ingest.BATCH_SIZE
         if statement.lower().startswith("insert into financial_data"):
             assert not executemany  # Each captured batch is an actual multi-VALUES INSERT.
 
@@ -109,9 +113,10 @@ def test_5000_facts_and_filings_have_bounded_sql_and_are_idempotent(batch):
     assert second.results[0].facts_written == second.results[0].filings_written == 0
     assert second.results[0].facts_skipped_duplicate == 5000
     assert second.results[0].filings_skipped_existing == 5000
-    assert len(initial) <= 30 and len(repeated) <= 7
+    assert len(initial) <= 39 and len(repeated) <= 16
     assert sum("from financial_data" in s for s in initial) == 1
-    assert sum("from filings" in s for s in initial) == 1
+    assert sum("from filings" in s for s in initial) == 10
+    assert sum("from filings" in s for s in repeated) == 10
     assert sum(s.startswith("insert into financial_data") for s in initial) == 10
     assert sum(s.startswith("insert into filings") for s in initial) == 10
     assert not any(
@@ -120,8 +125,64 @@ def test_5000_facts_and_filings_have_bounded_sql_and_are_idempotent(batch):
     assert len(state(batch, COMPANIES[0].entity_id)["facts"]) == 5000
     print(
         f"{batch.engine.dialect.name}: 5000 facts/5000 filings: "
-        f"initial={len(initial)} <=30, repeated={len(repeated)} <=7"
+        f"initial={len(initial)} <=39, repeated={len(repeated)} <=16"
     )
+
+
+@pytest.mark.parametrize("repeat_accession_in_payload", [False, True])
+def test_shared_global_accessions_do_not_block_second_company_facts_or_idempotency(
+    batch, repeat_accession_in_payload
+):
+    # Reproduce the combined-registrant case with the six-accession AAPL
+    # fixture and two synthetic registrants. Their facts must remain distinct.
+    first, second = COMPANIES[:2]
+    for company in (first, second):
+        submissions = _load("aapl_submissions.json")
+        companyfacts = _load("aapl_companyfacts.json")
+        submissions["cik"] = str(company.cik)
+        companyfacts["cik"] = company.cik
+        companyfacts["entityName"] = company.canonical_name
+        batch.connector.payloads[company.entity_id] = {
+            "submissions": submissions,
+            "companyfacts": companyfacts,
+        }
+    second_body = batch.connector.payloads[second.entity_id]
+    asset = second_body["companyfacts"]["facts"]["us-gaap"]["Assets"]["units"]["USD"][0]
+    asset["val"] += 1  # Same accession/tag/period can report a different registrant's value.
+    if repeat_accession_in_payload:
+        for company in (first, second):
+            recent = batch.connector.payloads[company.entity_id]["submissions"]["filings"]["recent"]
+            for entries in recent.values():
+                entries.append(entries[0])
+    first_result = ingest.run_ingestion(batch.settings, companies=[first]).results[0]
+    assert first_result.status == "success" and first_result.filings_written == 6
+    assert first_result.filings_skipped_existing == int(repeat_accession_in_payload)
+    first_state = state(batch, first.entity_id)
+    second_result = ingest.run_ingestion(batch.settings, companies=[second]).results[0]
+    assert second_result.status == "success" and second_result.ingestion_committed
+    assert second_result.filings_written == 0
+    assert second_result.filings_skipped_existing == 6 + int(repeat_accession_in_payload)
+    assert second_result.facts_written == first_result.facts_written > 0
+    second_state = state(batch, second.entity_id)
+    assert not second_state["filings"]
+    assert len(second_state["facts"]) == second_result.facts_written
+    first_values = {
+        (r.metric_id, r.unit, r.start_date, r.period_end_date, r.accession_number): r.value
+        for r in first_state["facts"]
+    }
+    second_values = {
+        (r.metric_id, r.unit, r.start_date, r.period_end_date, r.accession_number): r.value
+        for r in second_state["facts"]
+    }
+    assert first_values.keys() == second_values.keys() and first_values != second_values
+    repeated = ingest.run_ingestion(batch.settings, companies=[second]).results[0]
+    assert repeated.status == "success" and repeated.ingestion_committed
+    assert repeated.facts_written == repeated.filings_written == 0
+    assert repeated.filings_skipped_existing == second_result.filings_skipped_existing
+    assert repeated.facts_skipped_duplicate == second_result.facts_written
+    after = state(batch, second.entity_id)
+    assert after["facts"] == second_state["facts"] and after["filings"] == second_state["filings"]
+    assert state(batch, first.entity_id) == first_state
 
 
 def test_failure_after_first_bulk_batch_rolls_back_all_writes_and_continues(batch):

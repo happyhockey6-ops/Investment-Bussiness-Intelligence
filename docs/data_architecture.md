@@ -459,7 +459,9 @@ uses `FIXED_UNIVERSE`; it does not ingest the entire directory.
 For each company, both connector responses are fully fetched **before**
 opening its write session or taking the entity advisory lock. Within that
 transaction the existing archive/verify/decode rules apply. Financial-fact
-identities and values are loaded once for the company; exact Decimal
+identities and values are loaded once for the company; existing filings are
+looked up globally by incoming accession in batches of 500, since different
+registrants can share an accession. Exact Decimal
 comparisons skip identical duplicates and raise `DuplicateFactConflict` on
 different values, preserving its original/staged fact ID and source evidence.
 New facts and filings use multi-VALUES INSERTs in batches of 500. The partial
@@ -486,9 +488,9 @@ stage (`resolution`, `fetch`, `ingestion`, `metrics`). The CLI exits nonzero
 if any request fails. Interruptions and cancellation propagate.
 
 `test_ingest_by_ticker.py` checks SQLite/PostgreSQL with no external HTTP.
-Its generated 5,000-fact/5,000-filing fixture asserts at most 30 SQL statements
-on first ingestion and 7 on re-ingestion, with one existing-fact load, one
-existing-filing load and actual multi-VALUES batches. A PostgreSQL probe can
+Its generated 5,000-fact/5,000-filing fixture asserts at most 39 SQL statements
+on first ingestion and 16 on re-ingestion, with one existing-fact load, ten
+bounded global filing lookups and actual multi-VALUES batches. A PostgreSQL probe can
 acquire the entity lock while the connector fetches, and cannot acquire it
 inside archival (positive control). Existing ingestion/integrity/source
 tests are unchanged. No migration or financial-engine rule is introduced.

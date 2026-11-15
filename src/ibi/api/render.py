@@ -9,6 +9,8 @@ from __future__ import annotations
 from decimal import Decimal
 from html import escape
 
+from ibi.api.directory import Company, ListingsSnapshot
+from ibi.core.types import ConflictingEvidence
 from ibi.data_engine.sec_edgar.fixed_universe import FixedUniverseEntity
 from ibi.research.fundamentals import (
     DERIVED_METRICS,
@@ -52,6 +54,13 @@ details{text-align:left;white-space:normal;max-width:22rem;min-width:7rem}
 details ul{padding-left:1.2rem;overflow-wrap:anywhere}
 summary:focus-visible{outline:2px solid var(--accent)}
 .unverified{background:var(--warnbg);color:var(--warn)}
+.directory{overflow-wrap:anywhere}.directory-results{list-style:none;padding:0;margin:16px 0}
+.directory-results li{padding:12px 0;border-bottom:1px solid var(--line)}
+.directory-results a{display:block;font-size:1rem}.directory-results strong{margin-right:8px}
+.directory-meta{margin-top:4px}.badge{display:inline-block;padding:2px 7px;border-radius:5px;
+background:var(--head);font-size:.82rem}.listing-provenance{overflow-wrap:anywhere}
+.command{display:block;padding:12px;border:1px solid var(--line);border-radius:8px;
+white-space:pre-wrap;overflow-wrap:anywhere;font-size:.86rem}
 """
 
 
@@ -83,25 +92,124 @@ def redirect_page(location: str) -> str:
     )
 
 
-def home_page(q: str, matches: list[FixedUniverseEntity]) -> str:
-    items = "".join(
-        f"<li><a href='/companies/{escape(e.ticker or e.entity_id, quote=True)}'>"
-        f"{escape(e.ticker or '')}</a> — {escape(e.canonical_name)}</li>"
-        for e in matches
+def _directory_results(matches: list[Company]) -> str:
+    return (
+        "<ul class=directory-results>"
+        + "".join(
+            f"<li><a href='{escape(company.url, quote=True)}'>"
+            f"<strong>{escape(company.entity.ticker or '')}</strong>"
+            f"{escape(company.entity.canonical_name)}</a>"
+            f"<div class='directory-meta muted small'>CIK {company.entity.cik} · "
+            f"{escape(company.exchange or 'Exchange not reported')} · "
+            f"<span class=badge>{'Ingested' if company.ingested else 'Not yet ingested'}</span>"
+            "</div></li>"
+            for company in matches
+        )
+        + "</ul>"
     )
+
+
+def _listing_provenance(snapshot: ListingsSnapshot) -> str:
+    details = ""
+    if snapshot.source_document_id is not None:
+        details = (
+            f"<p>Listings snapshot · source document {snapshot.source_document_id} · "
+            f"retrieved <time datetime='{escape(snapshot.retrieval_date or '', quote=True)}'>"
+            f"{escape(snapshot.retrieval_date or 'Unknown retrieval time')}</time></p>"
+            f"<p><a href='{escape(snapshot.source_url or '', quote=True)}' "
+            f"rel=noreferrer target=_blank>SEC listings source</a> · "
+            f"SHA-256 <code>{escape(snapshot.content_sha256 or 'not recorded')}</code></p>"
+        )
+    if snapshot.resolution_source == "fixed_universe":
+        reason = (
+            "No SEC listings snapshot is stored"
+            if snapshot.source_document_id is None
+            else "The newest SEC listings snapshot is empty"
+        )
+        details += f"<p>{reason}. Using the fixed default coverage.</p>"
+    return (
+        "<aside class='listing-provenance muted small' aria-label='Listing provenance'>"
+        f"{details}</aside>"
+    )
+
+
+def home_page(q: str, matches: list[Company], snapshot: ListingsSnapshot) -> str:
     found = (
-        f"<ul class=results>{items}</ul>"
-        if items
-        else (f"<p class=muted>No covered company matches “{escape(q)}”.</p>")
+        _directory_results(matches)
+        if matches
+        else (
+            f"<p class=muted>No company matches “{escape(q)}”.</p>"
+            if q
+            else "<p class=muted>Enter a ticker or company name to search the SEC directory.</p>"
+        )
     )
     return _page(
         "Trusty",
         (
-            "<h1>Trusty</h1><p class=muted>Private investment research. Sourced, "
+            "<div class=directory><h1>Trusty</h1><p class=muted>Private investment research. "
+            "Sourced, "
             "reproducible fundamentals from SEC filings.</p>"
             + _search_form(q)
-            + "<h2>Covered companies</h2>"
+            + "<h2>Company search</h2>"
             + found
+            + _listing_provenance(snapshot)
+            + "</div>"
+        ),
+    )
+
+
+def not_ingested_page(company: Company) -> str:
+    entity = company.entity
+    prerequisite = (
+        "<p>The default coverage is available, but ticker ingestion first needs a SEC directory "
+        "snapshot. Refresh it before running the company command:</p>"
+        "<code class=command>python -m ibi.data_engine.sec_edgar.listings refresh</code>"
+        if company.snapshot.resolution_source == "fixed_universe"
+        else ""
+    )
+    return _page(
+        entity.canonical_name,
+        (
+            "<div class=directory><p><a href='/'>← Search</a></p>"
+            f"<h1>{escape(entity.canonical_name)} "
+            f"<span class=muted>{escape(entity.ticker or '')}</span></h1>"
+            f"<p>SEC CIK {entity.cik} · {escape(company.exchange or 'Exchange not reported')}</p>"
+            "<h2>Not yet ingested</h2>"
+            "<p>This company is in the directory. Its financial data has not been ingested. "
+            "Opening this page does not download SEC data.</p>"
+            + prerequisite
+            + "<p>To ingest this company, run:</p>"
+            f"<code class=command>{escape(company.ingest_command)}</code>"
+            + _listing_provenance(company.snapshot)
+            + "</div>"
+        ),
+    )
+
+
+def unknown_page(query: str, snapshot: ListingsSnapshot) -> str:
+    return _page(
+        "Company not found",
+        (
+            "<div class=directory><h1>Company not found</h1>"
+            f"<p>No exact ticker or CIK matches “{escape(query)}”.</p>"
+            "<p><a href='/'>Back to company search</a></p>"
+            + _listing_provenance(snapshot)
+            + "</div>"
+        ),
+    )
+
+
+def conflict_page(query: str, conflict: ConflictingEvidence, snapshot: ListingsSnapshot) -> str:
+    return _page(
+        "Conflicting ticker",
+        (
+            "<div class=directory><h1>Conflicting ticker</h1>"
+            f"<p>“{escape(query)}” is associated with more than one SEC CIK. "
+            "No company has been selected. Choose a candidate by its CIK:</p>"
+            + _directory_results(list(conflict.candidate_values))
+            + "<p><a href='/'>Back to company search</a></p>"
+            + _listing_provenance(snapshot)
+            + "</div>"
         ),
     )
 
@@ -240,7 +348,12 @@ _STATEMENT_TITLE = {
 }
 
 
-def company_page(entity: FixedUniverseEntity, f: Fundamentals) -> str:
+def company_page(
+    entity: FixedUniverseEntity,
+    f: Fundamentals,
+    *,
+    listing_snapshot: ListingsSnapshot | None = None,
+) -> str:
     head = (
         f"<p class=small><a href='/'>← Search</a></p>"
         f"<h1>{escape(entity.canonical_name)} <span class=muted>"
@@ -248,6 +361,8 @@ def company_page(entity: FixedUniverseEntity, f: Fundamentals) -> str:
         f"<p class='muted small'>SEC CIK {entity.cik} · as of "
         f"{f.as_of:%Y-%m-%d %H:%M} UTC · statement v{escape(f.statement_version)}</p>"
     )
+    if listing_snapshot is not None:
+        head += _listing_provenance(listing_snapshot)
     if not f.has_data:
         return _page(
             entity.canonical_name,

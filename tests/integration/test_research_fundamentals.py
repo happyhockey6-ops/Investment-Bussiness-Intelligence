@@ -209,8 +209,11 @@ def test_routes_never_commit(seeded):
     c = client(seeded)
     with Session(seeded) as s:
         before = s.query(FinancialDataPointRecord).count()
-    for path in ("/", "/companies/AAPL", "/api/companies/AAPL/fundamentals"):
-        assert c.get(path).status_code == 200
+    paths = {"/": 200, "/healthz": 200, "/api/companies?q=app": 200,
+             "/companies/AAPL": 200, "/api/companies/AAPL/fundamentals": 200,
+             "/companies/UNKNOWN": 404, "/api/companies/UNKNOWN/fundamentals": 404}
+    for path, status in paths.items():
+        assert c.get(path).status_code == status
     with Session(seeded) as s:
         assert s.query(FinancialDataPointRecord).count() == before
 

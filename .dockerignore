@@ -1,0 +1,14 @@
+**
+!Dockerfile
+!README.md
+!pyproject.toml
+!src/
+!src/**
+!alembic.ini
+!alembic/
+!alembic/**
+!deploy/
+!deploy/recovery.py
+**/__pycache__/
+**/*.egg-info/
+**/.env*

@@ -41,7 +41,7 @@ jobs:
       - name: Install project and existing development dependencies
         run: python -m pip install -e ".[dev]"
       - name: Lint
-        run: python -m ruff check src tests alembic
+        run: python -m ruff check src tests alembic deploy
       - name: Apply migrations and check schema
         run: |
           python -m alembic upgrade head

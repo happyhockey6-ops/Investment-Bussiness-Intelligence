@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import re
 from functools import lru_cache
+from ipaddress import ip_address
 from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["development", "test", "production"]
@@ -74,6 +75,19 @@ class Settings(BaseSettings):
             "code — gitignored."
         ),
     )
+
+    deployment: Literal["local", "container"] = "local"
+    api_host: str = "127.0.0.1"
+
+    @model_validator(mode="after")
+    def validate_api_binding(self) -> Settings:
+        if self.api_host == "0.0.0.0" and self.deployment == "container":
+            return self
+        if not ip_address(self.api_host).is_loopback:
+            raise ValueError(
+                "IBI_API_HOST must be loopback, or 0.0.0.0 with IBI_DEPLOYMENT=container"
+            )
+        return self
 
     api_port: int = Field(default=8000, description="Local port for `python -m ibi.api`.")
 

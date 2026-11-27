@@ -1,0 +1,108 @@
+x-settings: &settings
+  IBI_DATABASE_URL: postgresql+psycopg://ibi:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/ibi
+  IBI_RAW_DATA_DIR: /var/lib/trusty/raw
+  IBI_ENVIRONMENT: ${IBI_ENVIRONMENT:-production}
+  IBI_LOG_LEVEL: ${IBI_LOG_LEVEL:-INFO}
+  IBI_LOG_FORMAT: ${IBI_LOG_FORMAT:-json}
+x-runtime: &runtime
+  build:
+    context: .
+    target: app
+  depends_on:
+    db:
+      condition: service_healthy
+  environment: *settings
+x-tool: &tool
+  <<: *runtime
+  profiles: [tools]
+  entrypoint: [flock, --exclusive, /var/lock/trusty]
+  volumes:
+    - maintenance:/var/lock/trusty:ro
+x-writer: &writer
+  <<: *tool
+  environment:
+    <<: *settings
+    IBI_SEC_USER_AGENT: ${IBI_SEC_USER_AGENT:-}
+  volumes:
+    - maintenance:/var/lock/trusty:ro
+    - snapshots:/var/lib/trusty/raw
+x-recovery: &recovery
+  <<: *tool
+  build:
+    context: .
+    target: recovery
+    args:
+      TRUSTY_CODE_COMMIT: ${TRUSTY_CODE_COMMIT:?set to git rev-parse HEAD}
+  environment:
+    PGUSER: ibi
+    PGHOST: db
+    PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+services:
+  db:
+    image: postgres:16.16-bookworm@sha256:cd0e9518bda5f2ea667ff84d22795d089720c883f288e215d97ce57437e8ef37
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ibi
+      POSTGRES_DB: ibi
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        case "$$POSTGRES_PASSWORD" in *[!0-9a-fA-F]*) echo 'Generate a hex POSTGRES_PASSWORD (see docs/deploy.md)' >&2; exit 1;; esac
+        test "$${#POSTGRES_PASSWORD}" -ge 32 || { echo 'POSTGRES_PASSWORD too short' >&2; exit 1; }
+        exec docker-entrypoint.sh postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD, pg_isready, -h, 127.0.0.1, -U, ibi, -d, postgres]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  app:
+    <<: *runtime
+    restart: unless-stopped
+    ports: ["127.0.0.1:${IBI_API_PORT:-8000}:8000"]
+    environment:
+      <<: *settings
+      IBI_DEPLOYMENT: container
+      IBI_API_HOST: 0.0.0.0
+      IBI_API_PORT: "8000"
+      PGOPTIONS: "-c default_transaction_read_only=on"
+    volumes:
+      - snapshots:/var/lib/trusty/raw:ro
+  migrate:
+    <<: *tool
+    command: [alembic, upgrade, head]
+  listings:
+    <<: *writer
+    command: [python, -m, ibi.data_engine.sec_edgar.listings, refresh]
+  ingest:
+    <<: *writer
+    entrypoint: [flock, --exclusive, /var/lock/trusty, python, -m, ibi.data_engine.sec_edgar.ingest]
+    command: []
+  backup:
+    <<: *recovery
+    entrypoint: [flock, --exclusive, /var/lock/trusty, python3, recovery.py, backup]
+    volumes:
+      - maintenance:/var/lock/trusty:ro
+      - snapshots:/var/lib/trusty/raw:ro
+      - type: bind
+        source: ${TRUSTY_BACKUP_DIR:?set an absolute backup directory}
+        target: /backups
+        bind: {create_host_path: false}
+  restore:
+    <<: *recovery
+    entrypoint: [flock, --exclusive, /var/lock/trusty, python3, recovery.py, restore]
+    volumes:
+      - maintenance:/var/lock/trusty:ro
+      - snapshots:/var/lib/trusty/raw
+      - type: bind
+        source: ${TRUSTY_BACKUP_DIR:?set an absolute backup directory}
+        target: /backups
+        read_only: true
+        bind: {create_host_path: false}
+volumes:
+  pgdata: {}
+  snapshots: {}
+  maintenance: {}

@@ -1,8 +1,8 @@
 # Stored SEC directory and research pages
 
-The application remains bound to `127.0.0.1` by `python -m ibi.api`.
-Authentication and hosting are outside this change. No route downloads SEC
-data, constructs an SEC client, starts ingestion, writes, or commits.
+Run `python -m ibi.api` from the repository root after applying migrations.
+The default bind address is `127.0.0.1`. For private container access see
+[the deployment guide](../../../docs/deploy.md). Routes read stored data.
 
 - `/` and `/api/companies?q=` search the newest SEC listing snapshot through
   `listings.search_listings`, with at most 20 results. Results include ticker,

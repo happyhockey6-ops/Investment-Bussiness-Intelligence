@@ -62,3 +62,6 @@ and running migrations.
 | [docs/data_architecture.md](docs/data_architecture.md) | Data integrity, immutability, point-in-time design |
 | [docs/provider_architecture.md](docs/provider_architecture.md) | AI/market-data provider abstraction |
 | [docs/testing_strategy.md](docs/testing_strategy.md) | What's tested, how, and why |
+
+For private, single-user access from a phone or desktop, follow the
+[Compose, backups and Tailscale installation guide](docs/deploy.md).

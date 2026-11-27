@@ -1,8 +1,7 @@
 """FastAPI application: company search and the fundamentals research page.
 
 Read-only: no route writes to the database or calls an external service.
-There is no authentication yet, so `__main__` binds to 127.0.0.1 only.
-Do not expose this app on a network until access control is decided.
+The local default is loopback. See docs/deploy.md for single-user tailnet access.
 """
 
 from __future__ import annotations

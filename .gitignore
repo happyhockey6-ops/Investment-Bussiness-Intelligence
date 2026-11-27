@@ -48,3 +48,6 @@ Thumbs.db
 # --- OneDrive sync artifacts ---
 *.tmp
 ~$*
+
+# Private deployment backup sets
+backups/
